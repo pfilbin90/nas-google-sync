@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files (contain passwords)
+.env
+.env.local
+.env.*.local
+
+# Data directory (contains database and OAuth tokens)
+data/
+!data/.gitkeep
+
+# Credentials (OAuth client secrets)
+credentials/
+!credentials/.gitkeep
+
+# Logs
+*.log
+logs/
+!logs/.gitkeep
+
+# Google Takeout exports (large files, user data)
+takeout/
+Takeout/
+*.zip
+
+# IDE and tools
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Test coverage
+coverage/
+
+# Temporary files
+*.tmp
+*.temp

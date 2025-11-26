@@ -1,0 +1,58 @@
+{
+  "name": "nas-google-sync",
+  "version": "1.0.0",
+  "description": "Backup Google Photos (via Takeout) to Synology NAS with duplicate detection",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "nas-google-sync": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "scan": "node dist/index.js scan",
+    "analyze": "node dist/index.js analyze",
+    "status": "node dist/index.js status",
+    "sync": "node dist/index.js sync",
+    "import": "node dist/index.js import",
+    "export": "node dist/index.js export",
+    "workflow": "node dist/index.js workflow",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "google-photos",
+    "google-takeout",
+    "synology",
+    "synology-photos",
+    "nas",
+    "backup",
+    "photo-sync",
+    "duplicate-detection"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/nas-google-sync.git"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "axios": "^1.13.2",
+    "better-sqlite3": "^12.4.6",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "form-data": "^4.0.5",
+    "winston": "^3.18.3"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
