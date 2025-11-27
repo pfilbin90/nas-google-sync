@@ -235,6 +235,25 @@ Google doesn't let apps delete photos. After confirming your backup, use [Google
 
 ---
 
+## How Scanning Works
+
+The `scan` command indexes photos from your Synology NAS so the tool can detect duplicates. It scans two locations:
+
+1. **Personal Space** - Your private photos in `/homes/<username>/Photos`
+2. **Shared Space** - Photos in the shared `/photo` folder
+
+### Multiple Users with Shared Space
+
+If you and your spouse both have accounts and share the same Shared Space, don't worry - the tool handles this correctly:
+
+- Each user's **Personal Space** photos are tracked separately
+- **Shared Space** photos are tracked globally (not per-user)
+- When both users run `scan`, shared photos are only counted once
+
+This means you won't get inflated photo counts or false duplicates when multiple family members use the tool.
+
+---
+
 ## How Duplicate Detection Works
 
 The tool matches photos between Google Takeout and Synology using:
