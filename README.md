@@ -77,17 +77,19 @@ PAIRING_1_SYNOLOGY=myaccount
 
 ```bash
 # First, scan your Synology to find existing photos
-npm run start -- scan
+node dist/index.js scan
 
 # Import the Google Takeout
-npm run start -- import "C:\path\to\Takeout\Google Photos" --account mygoogle
+node dist/index.js import "C:\path\to\Takeout\Google Photos" --account mygoogle
 
 # Upload to Synology
-npm run start -- sync --account mygoogle
+node dist/index.js sync --account mygoogle
 
 # See what's safe to delete from Google
-npm run start -- export --format dates --account mygoogle
+node dist/index.js export --format dates --account mygoogle
 ```
+
+> **Note:** If your path has spaces, make sure the entire command is on one line.
 
 ---
 
@@ -127,25 +129,25 @@ PAIRING_2_SYNOLOGY=user2
 
 ```bash
 # Scan Synology first (only needed once)
-npm run start -- scan
+node dist/index.js scan
 
 # YOUR photos
-npm run start -- import "C:\Takeout\me" --account me
-npm run start -- sync --account me
+node dist/index.js import "C:\Takeout\me" --account me
+node dist/index.js sync --account me
 
 # SPOUSE's photos
-npm run start -- import "C:\Takeout\spouse" --account spouse
-npm run start -- sync --account spouse
+node dist/index.js import "C:\Takeout\spouse" --account spouse
+node dist/index.js sync --account spouse
 ```
 
 **Step 3:** See what each person can delete from Google:
 
 ```bash
 # Your backed-up photos
-npm run start -- export --format dates --account me
+node dist/index.js export --format dates --account me
 
 # Spouse's backed-up photos
-npm run start -- export --format dates --account spouse
+node dist/index.js export --format dates --account spouse
 ```
 
 Each person then deletes from their **own** Google Photos account based on their date ranges.
@@ -156,11 +158,11 @@ Each person then deletes from their **own** Google Photos account based on their
 
 | Command | What it does |
 |---------|--------------|
-| `npm run start -- scan` | Index photos already on your Synology |
-| `npm run start -- import <path> --account <name>` | Import a Google Takeout folder |
-| `npm run start -- sync --account <name>` | Upload new photos to Synology |
-| `npm run start -- export --format dates --account <name>` | Show backed-up photos for that account |
-| `npm run start -- workflow` | Show detailed step-by-step guide |
+| `node dist/index.js scan` | Index photos already on your Synology |
+| `node dist/index.js import <path> --account <name>` | Import a Google Takeout folder |
+| `node dist/index.js sync --account <name>` | Upload new photos to Synology |
+| `node dist/index.js export --format dates --account <name>` | Show backed-up photos for that account |
+| `node dist/index.js workflow` | Show detailed step-by-step guide |
 
 ---
 
