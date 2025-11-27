@@ -4,6 +4,21 @@
 
 Google killed their Photos API in March 2025. This tool works around that by importing your photos from Google Takeout and uploading them to Synology Photos.
 
+---
+
+## Before You Start: Fix Your Photo Dates
+
+Google Takeout strips metadata (dates, locations) from your photos and stores it in separate JSON files. This tool reads those JSON files, but **your photos will still have wrong dates embedded in them**.
+
+If you want your photos to have correct dates when viewed in Synology Photos (or any other app), run **[Google Takeout Metadata Restorer](https://github.com/pfilbin90/google-takeout-metadata-restorer)** on your Takeout folder first. It embeds the dates and locations back into your actual photo files.
+
+**Recommended workflow:**
+1. Download and extract your Google Takeout
+2. Run [google-takeout-metadata-restorer](https://github.com/pfilbin90/google-takeout-metadata-restorer) to fix embedded dates
+3. Then use this tool (nas-google-sync) to upload to Synology
+
+---
+
 ## What It Does
 
 1. **Scans** your Synology NAS to see what photos you already have
