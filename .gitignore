@@ -45,3 +45,4 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+photos.db
