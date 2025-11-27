@@ -175,30 +175,29 @@ export class GoogleTakeoutService {
   }
 
   private loadMetadata(mediaFilePath: string): TakeoutMetadata | undefined {
-    // Google Takeout creates JSON files with the same name as the media file
-    // e.g., "IMG_1234.jpg" has "IMG_1234.jpg.json"
-    const jsonPath = `${mediaFilePath}.json`;
-
-    if (fs.existsSync(jsonPath)) {
-      try {
-        const content = fs.readFileSync(jsonPath, 'utf-8');
-        return JSON.parse(content) as TakeoutMetadata;
-      } catch (error) {
-        logger.debug(`Could not parse metadata for ${mediaFilePath}: ${error}`);
-      }
-    }
-
-    // Sometimes the JSON has a slightly different name pattern
     const dir = path.dirname(mediaFilePath);
+    const filename = path.basename(mediaFilePath);
     const basename = path.basename(mediaFilePath, path.extname(mediaFilePath));
-    const altJsonPath = path.join(dir, `${basename}.json`);
 
-    if (fs.existsSync(altJsonPath) && altJsonPath !== jsonPath) {
-      try {
-        const content = fs.readFileSync(altJsonPath, 'utf-8');
-        return JSON.parse(content) as TakeoutMetadata;
-      } catch (error) {
-        logger.debug(`Could not parse alt metadata for ${mediaFilePath}: ${error}`);
+    // Google Takeout uses different JSON naming conventions depending on export date:
+    // 1. Newer exports: "IMG_1234.jpg.supplemental-metadata.json"
+    // 2. Older exports: "IMG_1234.jpg.json"
+    // 3. Sometimes: "IMG_1234.json" (without extension)
+    const possibleJsonPaths = [
+      `${mediaFilePath}.supplemental-metadata.json`,
+      `${mediaFilePath}.json`,
+      path.join(dir, `${basename}.json`),
+      path.join(dir, `${filename}.json`),
+    ];
+
+    for (const jsonPath of possibleJsonPaths) {
+      if (fs.existsSync(jsonPath)) {
+        try {
+          const content = fs.readFileSync(jsonPath, 'utf-8');
+          return JSON.parse(content) as TakeoutMetadata;
+        } catch (error) {
+          logger.debug(`Could not parse metadata at ${jsonPath}: ${error}`);
+        }
       }
     }
 

@@ -131,21 +131,35 @@ export class SyncService {
     result.totalScanned = scanResult.photos.length;
     result.errors = scanResult.errors;
 
-    // Get existing photos from database for comparison
-    const existingSynologyPhotos = this.getAllSynologyPhotoHashes();
-    const existingTakeoutHashes = new Set<string>();
+    // Get existing Synology photos for comparison (by hash and by filename+date)
+    const synologyByHash = this.getAllSynologyPhotoHashes();
+    const synologyByFilenameDate = this.getAllSynologyPhotosByFilenameDate();
+
+    // Track what we've already seen in this takeout
+    const seenTakeoutHashes = new Set<string>();
+    const seenTakeoutFilenameDate = new Set<string>();
 
     // Check each photo for duplicates
     const newPhotos: TakeoutPhoto[] = [];
 
     for (const photo of scanResult.photos) {
-      if (existingSynologyPhotos.has(photo.hash)) {
+      // Create a filename+date key for matching (normalize date to just the date part)
+      const dateKey = this.normalizeDate(photo.creationTime);
+      const filenameDateKey = `${photo.filename.toLowerCase()}|${dateKey}`;
+
+      // Check if it's a duplicate (by hash OR by filename+date)
+      const hashMatch = synologyByHash.has(photo.hash);
+      const filenameDateMatch = synologyByFilenameDate.has(filenameDateKey);
+
+      if (hashMatch || filenameDateMatch) {
         result.duplicatesInSynology++;
-      } else if (existingTakeoutHashes.has(photo.hash)) {
+        logger.debug(`Duplicate found: ${photo.filename} (${hashMatch ? 'hash' : 'filename+date'} match)`);
+      } else if (seenTakeoutHashes.has(photo.hash) || seenTakeoutFilenameDate.has(filenameDateKey)) {
         result.duplicatesInTakeout++;
       } else {
         newPhotos.push(photo);
-        existingTakeoutHashes.add(photo.hash);
+        seenTakeoutHashes.add(photo.hash);
+        seenTakeoutFilenameDate.add(filenameDateKey);
       }
     }
 
@@ -172,6 +186,32 @@ export class SyncService {
     `).all() as Array<{ hash: string }>;
 
     return new Set(rows.map(r => r.hash));
+  }
+
+  private getAllSynologyPhotosByFilenameDate(): Set<string> {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT filename, creation_time FROM photos
+      WHERE source = 'synology' AND filename IS NOT NULL AND creation_time IS NOT NULL
+    `).all() as Array<{ filename: string; creation_time: string }>;
+
+    return new Set(rows.map(r => {
+      const dateKey = this.normalizeDate(r.creation_time);
+      return `${r.filename.toLowerCase()}|${dateKey}`;
+    }));
+  }
+
+  /**
+   * Normalize a date to YYYY-MM-DD format for comparison
+   * This allows matching photos taken on the same day even if times differ slightly
+   */
+  private normalizeDate(dateStr: string): string {
+    try {
+      const date = new Date(dateStr);
+      return date.toISOString().split('T')[0]; // Returns YYYY-MM-DD
+    } catch {
+      return dateStr;
+    }
   }
 
   /**

@@ -5,7 +5,7 @@ import { loadConfig } from './config.js';
 import { logger } from './utils/logger.js';
 import { SyncService, AnalysisReport } from './services/sync-service.js';
 import { extractTakeoutZip } from './services/google-takeout.js';
-import { getPhotoStats, closeDatabase } from './models/database.js';
+import { getPhotoStats, closeDatabase, getDatabase } from './models/database.js';
 
 const program = new Command();
 
@@ -383,6 +383,130 @@ program
 
     } catch (error) {
       logger.error(`Export failed: ${error}`);
+      process.exit(1);
+    } finally {
+      closeDatabase();
+    }
+  });
+
+program
+  .command('inspect')
+  .description('Inspect photos to verify matching is working correctly')
+  .option('--new', 'Show photos marked as NEW (not on Synology)')
+  .option('--matched', 'Show photos that matched Synology')
+  .option('--synology', 'Show sample Synology photos for comparison')
+  .option('-n, --count <number>', 'Number of photos to show', '20')
+  .option('--search <filename>', 'Search for a specific filename')
+  .action(async (options) => {
+    const db = getDatabase();
+    const limit = parseInt(options.count, 10);
+
+    try {
+      if (options.search) {
+        // Search for a specific filename in both sources
+        const searchTerm = `%${options.search}%`;
+
+        console.log(`\n========== SEARCH: "${options.search}" ==========\n`);
+
+        const synologyMatches = db.prepare(`
+          SELECT filename, creation_time, file_size, source
+          FROM photos
+          WHERE source = 'synology' AND filename LIKE ?
+          LIMIT 20
+        `).all(searchTerm) as any[];
+
+        const googleMatches = db.prepare(`
+          SELECT filename, creation_time, file_size, source
+          FROM photos
+          WHERE source = 'google' AND filename LIKE ?
+          LIMIT 20
+        `).all(searchTerm) as any[];
+
+        console.log(`Synology matches (${synologyMatches.length}):`);
+        for (const p of synologyMatches) {
+          const date = p.creation_time ? p.creation_time.split('T')[0] : 'no-date';
+          console.log(`  ${p.filename} | ${date} | ${p.file_size || '?'} bytes`);
+        }
+
+        console.log(`\nGoogle Takeout matches (${googleMatches.length}):`);
+        for (const p of googleMatches) {
+          const date = p.creation_time ? p.creation_time.split('T')[0] : 'no-date';
+          console.log(`  ${p.filename} | ${date} | ${p.file_size || '?'} bytes`);
+        }
+
+        if (synologyMatches.length > 0 && googleMatches.length > 0) {
+          console.log('\n⚠️  Found in BOTH - should have been marked as duplicate!');
+          console.log('   Check if dates match (comparison uses YYYY-MM-DD only)');
+        }
+
+      } else if (options.matched) {
+        // This would require tracking which photos matched during import
+        // For now, show photos that exist in both (by filename)
+        console.log('\n========== PHOTOS IN BOTH SYNOLOGY AND GOOGLE ==========\n');
+
+        const matches = db.prepare(`
+          SELECT
+            g.filename,
+            g.creation_time as google_date,
+            s.creation_time as synology_date,
+            g.file_size as google_size,
+            s.file_size as synology_size
+          FROM photos g
+          JOIN photos s ON LOWER(g.filename) = LOWER(s.filename)
+          WHERE g.source = 'google' AND s.source = 'synology'
+          LIMIT ?
+        `).all(limit) as any[];
+
+        console.log(`Found ${matches.length} photos with same filename in both:\n`);
+        for (const m of matches) {
+          const gDate = m.google_date ? m.google_date.split('T')[0] : 'no-date';
+          const sDate = m.synology_date ? m.synology_date.split('T')[0] : 'no-date';
+          const dateMatch = gDate === sDate ? '✓' : '✗';
+          console.log(`  ${m.filename}`);
+          console.log(`    Google:   ${gDate} | ${m.google_size || '?'} bytes`);
+          console.log(`    Synology: ${sDate} | ${m.synology_size || '?'} bytes`);
+          console.log(`    Date match: ${dateMatch}\n`);
+        }
+
+      } else if (options.synology) {
+        console.log('\n========== SYNOLOGY PHOTOS (sample) ==========\n');
+
+        const photos = db.prepare(`
+          SELECT filename, creation_time, file_size
+          FROM photos
+          WHERE source = 'synology'
+          ORDER BY creation_time DESC
+          LIMIT ?
+        `).all(limit) as any[];
+
+        for (const p of photos) {
+          const date = p.creation_time ? p.creation_time.split('T')[0] : 'no-date';
+          console.log(`  ${p.filename} | ${date} | ${p.file_size || '?'} bytes`);
+        }
+
+      } else {
+        // Default: show NEW photos (from Google, not on Synology)
+        console.log('\n========== NEW PHOTOS (not on Synology) ==========\n');
+
+        const photos = db.prepare(`
+          SELECT filename, creation_time, file_size
+          FROM photos
+          WHERE source = 'google' AND is_backed_up = 0
+          ORDER BY creation_time ASC
+          LIMIT ?
+        `).all(limit) as any[];
+
+        console.log(`Showing ${photos.length} oldest "new" photos:\n`);
+        for (const p of photos) {
+          const date = p.creation_time ? p.creation_time.split('T')[0] : 'no-date';
+          console.log(`  ${p.filename} | ${date} | ${p.file_size || '?'} bytes`);
+        }
+
+        console.log('\nTip: Use --search <filename> to check if a specific photo exists on Synology');
+      }
+
+    } catch (error) {
+      logger.error(`Inspect failed: ${error}`);
       process.exit(1);
     } finally {
       closeDatabase();

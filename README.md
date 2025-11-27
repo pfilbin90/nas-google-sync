@@ -162,7 +162,29 @@ Each person then deletes from their **own** Google Photos account based on their
 | `node dist/index.js import <path> --account <name>` | Import a Google Takeout folder |
 | `node dist/index.js sync --account <name>` | Upload new photos to Synology |
 | `node dist/index.js export --format dates --account <name>` | Show backed-up photos for that account |
+| `node dist/index.js inspect` | Verify duplicate detection is working |
 | `node dist/index.js workflow` | Show detailed step-by-step guide |
+
+### Inspect Command Options
+
+Use `inspect` to debug and verify that duplicate matching is working:
+
+```bash
+# Search for a specific photo in both Synology and Takeout
+node dist/index.js inspect --search "IMG_1234.jpg"
+
+# Show photos that exist in BOTH sources (matched duplicates)
+node dist/index.js inspect --matched
+
+# Show sample Synology photos with their dates
+node dist/index.js inspect --synology
+
+# Show photos marked as "new" (not found on Synology)
+node dist/index.js inspect --new
+
+# Control how many results to show (default: 20)
+node dist/index.js inspect --synology -n 50
+```
 
 ---
 
