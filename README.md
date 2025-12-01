@@ -243,7 +243,7 @@ node dist/index.js albums -n 100
 ```
 
 Example output:
-```
+```text
 ========== DETECTED ALBUMS ==========
 
   Total albums: 47
@@ -329,7 +329,7 @@ Photos that match are marked as "Already on Synology" and won't be uploaded agai
 
 When you import a Google Takeout, the tool detects albums from the folder structure:
 
-```
+```text
 Google Photos/
 ├── Trip to Florida/          ← Album: "Trip to Florida"
 │   ├── IMG_001.jpg

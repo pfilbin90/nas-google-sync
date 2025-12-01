@@ -107,8 +107,11 @@ function initializeSchema(database: Database.Database): void {
   try {
     database.exec(`ALTER TABLE photos ADD COLUMN album_name TEXT`);
     logger.info('Added album_name column to photos table');
-  } catch (e) {
-    // Column already exists, ignore
+  } catch (e: any) {
+    // Ignore "duplicate column name" errors, but re-throw others
+    if (!e.message?.includes('duplicate column name')) {
+      throw e;
+    }
   }
 
   logger.info('Database schema initialized');

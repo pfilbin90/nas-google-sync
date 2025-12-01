@@ -186,6 +186,7 @@ export class GoogleTakeoutService {
       /^\d{4}-\d{2}-\d{2}$/, // YYYY-MM-DD
       /^Archive$/i,        // Generic Archive folder
       /^Trash$/i,          // Trash folder
+      /^Edited$/i,         // Edited photos folder
     ];
 
     for (const pattern of skipPatterns) {

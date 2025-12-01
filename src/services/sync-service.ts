@@ -283,6 +283,12 @@ export class SyncService {
       tagWriter = new TagWriterService(dryRun);
     }
 
+    // Get database connection and prepare statement outside the loop for performance
+    const db = getDatabase();
+    const photoStmt = db.prepare(`
+      SELECT synology_path, album_name FROM photos WHERE id = ?
+    `);
+
     try {
       for (let i = 0; i < photosToSync.length; i++) {
         const photo = photosToSync[i];
@@ -292,10 +298,7 @@ export class SyncService {
         }
 
         // Get the file path and album name from database
-        const db = getDatabase();
-        const row = db.prepare(`
-          SELECT synology_path, album_name FROM photos WHERE id = ?
-        `).get(photo.id) as { synology_path?: string; album_name?: string } | undefined;
+        const row = photoStmt.get(photo.id) as { synology_path?: string; album_name?: string } | undefined;
 
         const filePath = row?.synology_path;
         const albumName = row?.album_name;
@@ -318,14 +321,16 @@ export class SyncService {
           // Determine destination folder
           let destFolder = pairedSynology.photoLibraryPath;
           if (organizeByAlbum && albumName) {
-            destFolder = `${pairedSynology.photoLibraryPath}/${albumName}`;
+            // Sanitize album name to be a valid folder name
+            const sanitizedAlbumName = albumName.replace(/[<>:"/\\|?*]/g, '_');
+            destFolder = `${pairedSynology.photoLibraryPath}/${sanitizedAlbumName}`;
 
             // Create folder if not already created (Synology will auto-create, but we track it)
-            if (!createdFolders.has(albumName)) {
+            if (!createdFolders.has(sanitizedAlbumName)) {
               if (!dryRun) {
-                logger.debug(`Photos will be organized into album folder: ${albumName}`);
+                logger.debug(`Photos will be organized into album folder: ${sanitizedAlbumName}`);
               }
-              createdFolders.add(albumName);
+              createdFolders.add(sanitizedAlbumName);
             }
           }
 

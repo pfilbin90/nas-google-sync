@@ -64,13 +64,17 @@ export class TagWriterService {
         return result;
       }
 
+      // Read existing tags to preserve them
+      const existingTags = await this.readTags(filePath);
+      const mergedTags = [...new Set([...existingTags, albumName])];
+
       // Write album name to multiple metadata fields for maximum compatibility:
       // - XMP:Subject - Used by many photo apps for keywords/tags
       // - IPTC:Keywords - Standard IPTC keyword field
       // - XMP:HierarchicalSubject - Hierarchical subject for albums
       await exiftool.write(filePath, {
-        'Subject': [albumName],
-        'Keywords': [albumName],
+        'Subject': mergedTags,
+        'Keywords': mergedTags,
         'HierarchicalSubject': [`Album|${albumName}`],
       }, {
         writeArgs: ['-overwrite_original'],  // Don't create backup files
