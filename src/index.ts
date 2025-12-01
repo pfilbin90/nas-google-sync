@@ -215,12 +215,16 @@ program
   .option('--dry-run', 'Show what would be synced without actually syncing')
   .option('--organize-by-album', 'Create album folders on Synology and organize photos into them')
   .option('--tag-with-album', 'Write album name to photo EXIF tags (XMP:Subject and Keywords)')
+  .option('--reprocess', 'Re-apply album tags to photos already synced (requires --tag-with-album)')
   .action(async (options) => {
     const service = new SyncService();
     const config = loadConfig();
 
     try {
-      await service.authenticateAll();
+      // Reprocess mode doesn't need Synology auth (only modifies local files)
+      if (!options.reprocess) {
+        await service.authenticateAll();
+      }
 
       const accounts = options.account
         ? [options.account]
@@ -228,32 +232,62 @@ program
 
       for (const accountName of accounts) {
         const modeInfo = [];
+        if (options.reprocess) modeInfo.push('reprocessing');
         if (options.organizeByAlbum) modeInfo.push('organizing by album');
         if (options.tagWithAlbum) modeInfo.push('tagging with album');
         const modeStr = modeInfo.length > 0 ? ` (${modeInfo.join(', ')})` : '';
 
-        console.log(`\nSyncing ${accountName} to Synology${modeStr}...`);
-
-        const syncOptions: SyncOptions = {
-          limit: options.limit ? parseInt(options.limit, 10) : undefined,
-          dryRun: options.dryRun,
-          organizeByAlbum: options.organizeByAlbum,
-          tagWithAlbum: options.tagWithAlbum,
-        };
-
-        const result = await service.syncToSynology(
-          accountName,
-          syncOptions,
-          (current, total, filename) => {
-            process.stdout.write(`\r[${current}/${total}] ${filename}...`);
+        if (options.reprocess) {
+          // Reprocess mode: apply album tags to already-synced photos
+          if (!options.tagWithAlbum) {
+            console.error('\nError: --reprocess requires --tag-with-album option');
+            console.log('This applies album tags to photos that were already synced.\n');
+            process.exit(1);
           }
-        );
 
-        let summary = `\n${accountName}: Synced ${result.synced}, Failed ${result.failed}, Skipped ${result.skipped}`;
-        if (result.tagged > 0) {
-          summary += `, Tagged ${result.tagged}`;
+          console.log(`\nReprocessing ${accountName} for album tagging...`);
+
+          const syncOptions: SyncOptions = {
+            limit: options.limit ? parseInt(options.limit, 10) : undefined,
+            dryRun: options.dryRun,
+            tagWithAlbum: true,
+            reprocess: true,
+          };
+
+          const result = await service.reprocessForAlbums(
+            accountName,
+            syncOptions,
+            (current, total, filename) => {
+              process.stdout.write(`\r[${current}/${total}] ${filename}...`);
+            }
+          );
+
+          console.log(`\n${accountName}: Tagged ${result.tagged}, Skipped ${result.skipped}, Failed ${result.failed}`);
+        } else {
+          // Normal sync mode
+          console.log(`\nSyncing ${accountName} to Synology${modeStr}...`);
+
+          const syncOptions: SyncOptions = {
+            limit: options.limit ? parseInt(options.limit, 10) : undefined,
+            dryRun: options.dryRun,
+            organizeByAlbum: options.organizeByAlbum,
+            tagWithAlbum: options.tagWithAlbum,
+          };
+
+          const result = await service.syncToSynology(
+            accountName,
+            syncOptions,
+            (current, total, filename) => {
+              process.stdout.write(`\r[${current}/${total}] ${filename}...`);
+            }
+          );
+
+          let summary = `\n${accountName}: Synced ${result.synced}, Failed ${result.failed}, Skipped ${result.skipped}`;
+          if (result.tagged > 0) {
+            summary += `, Tagged ${result.tagged}`;
+          }
+          console.log(summary);
         }
-        console.log(summary);
       }
     } catch (error) {
       logger.error(`Sync failed: ${error}`);
@@ -343,6 +377,95 @@ program
     } finally {
       await service.cleanup();
       closeDatabase();
+    }
+  });
+
+program
+  .command('retag')
+  .description('Apply album tags to photos in a Google Takeout folder (no upload)')
+  .argument('<path>', 'Path to the extracted Google Takeout folder')
+  .option('-n, --limit <number>', 'Limit number of photos to tag')
+  .option('--dry-run', 'Show what would be tagged without actually tagging')
+  .action(async (takeoutPath: string, options) => {
+    const fs = await import('fs');
+    const pathModule = await import('path');
+    const { GoogleTakeoutService } = await import('./services/google-takeout.js');
+    const { TagWriterService } = await import('./services/tag-writer.js');
+
+    try {
+      // Try to find the Google Photos subfolder
+      let photosPath = takeoutPath;
+      const googlePhotosSubfolder = pathModule.join(takeoutPath, 'Google Photos');
+      const takeoutSubfolder = pathModule.join(takeoutPath, 'Takeout', 'Google Photos');
+
+      if (fs.existsSync(googlePhotosSubfolder)) {
+        photosPath = googlePhotosSubfolder;
+      } else if (fs.existsSync(takeoutSubfolder)) {
+        photosPath = takeoutSubfolder;
+      }
+
+      console.log(`\nScanning for photos with albums in: ${photosPath}`);
+
+      // Scan the takeout folder to find photos with albums
+      const takeoutService = new GoogleTakeoutService('retag');
+      const scanResult = await takeoutService.scanTakeoutFolder(photosPath, (count) => {
+        process.stdout.write(`\rScanned ${count} photos...`);
+      });
+
+      // Filter to photos with albums
+      let photosWithAlbums = scanResult.photos.filter(p => p.albumName);
+
+      if (options.limit) {
+        photosWithAlbums = photosWithAlbums.slice(0, parseInt(options.limit, 10));
+      }
+
+      if (photosWithAlbums.length === 0) {
+        console.log('\n\nNo photos with album assignments found.');
+        console.log('Albums are detected from the folder structure (e.g., "Trip to Florida/photo.jpg").\n');
+        return;
+      }
+
+      console.log(`\n\nFound ${photosWithAlbums.length} photos in ${scanResult.albumsFound.size} albums.`);
+      console.log(`${options.dryRun ? '[DRY RUN] ' : ''}Applying album tags...\n`);
+
+      const tagWriter = new TagWriterService(options.dryRun || false);
+      let tagged = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      try {
+        for (let i = 0; i < photosWithAlbums.length; i++) {
+          const photo = photosWithAlbums[i];
+          process.stdout.write(`\r[${i + 1}/${photosWithAlbums.length}] ${photo.filename}...`);
+
+          const result = await tagWriter.writeAlbumTag(photo.filePath, photo.albumName!);
+
+          if (result.success) {
+            tagged++;
+          } else if (result.error?.includes('Unsupported format')) {
+            skipped++;
+          } else {
+            failed++;
+          }
+        }
+      } finally {
+        await tagWriter.close();
+      }
+
+      console.log('\n');
+      console.log('========== RETAG RESULTS ==========');
+      console.log(`  Tagged: ${tagged}`);
+      console.log(`  Skipped (unsupported format): ${skipped}`);
+      console.log(`  Failed: ${failed}`);
+      console.log('===================================\n');
+
+      if (!options.dryRun && tagged > 0) {
+        console.log('Album tags have been written to your photos.');
+        console.log('You can now upload these photos to Synology or any other photo service.\n');
+      }
+    } catch (error) {
+      logger.error(`Retag failed: ${error}`);
+      process.exit(1);
     }
   });
 

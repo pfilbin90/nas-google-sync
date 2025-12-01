@@ -173,6 +173,7 @@ Each person then deletes from their **own** Google Photos account based on their
 | `node dist/index.js import <path> --account <name>` | Import a Google Takeout folder |
 | `node dist/index.js sync --account <name>` | Upload new photos to Synology |
 | `node dist/index.js albums` | List albums detected from Google Takeout |
+| `node dist/index.js retag <path>` | Apply album tags to photos in a takeout folder |
 | `node dist/index.js export --format dates --account <name>` | Show backed-up photos for that account |
 | `node dist/index.js inspect` | Verify duplicate detection is working |
 | `node dist/index.js workflow` | Show detailed step-by-step guide |
@@ -226,6 +227,39 @@ node dist/index.js sync --account mygoogle --organize-by-album --tag-with-album
 - **Both** - Maximum flexibility. Photos are organized in folders AND have embedded tags.
 
 > **Note:** The `--tag-with-album` option requires `exiftool` (bundled automatically). It only works on supported image formats (JPEG, PNG, TIFF, HEIC). Videos are skipped for tagging.
+
+### Already Synced Photos? Use --reprocess
+
+If you already synced photos without album preservation, you can apply album tags to them retroactively:
+
+```bash
+# Apply album tags to already-synced photos (requires source files to still exist)
+node dist/index.js sync --account mygoogle --reprocess --tag-with-album
+
+# Preview what would be tagged
+node dist/index.js sync --account mygoogle --reprocess --tag-with-album --dry-run
+```
+
+This finds photos that were already synced but still have their source files in the takeout folder, and applies the album tags to them.
+
+> **Important:** This only works if you haven't deleted your Google Takeout files yet. The tags are written to the source files, not to files already on Synology.
+
+### Retag Command (Tag Without Syncing)
+
+If you want to apply album tags to photos without using this tool's sync feature:
+
+```bash
+# Apply album tags directly to takeout folder
+node dist/index.js retag "C:\path\to\Takeout\Google Photos"
+
+# Preview what would be tagged
+node dist/index.js retag "C:\path\to\Takeout\Google Photos" --dry-run
+
+# Tag only first 50 photos as a test
+node dist/index.js retag "C:\path\to\Takeout\Google Photos" -n 50
+```
+
+This writes album names to photo EXIF tags (XMP:Subject, IPTC:Keywords). You can then upload the tagged photos to any photo service that reads these tags.
 
 ### Albums Command
 

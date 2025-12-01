@@ -58,6 +58,7 @@ export interface SyncOptions {
   dryRun?: boolean;
   organizeByAlbum?: boolean;  // Create album folders on Synology
   tagWithAlbum?: boolean;     // Write album name to photo EXIF tags
+  reprocess?: boolean;        // Re-apply album tags to already-synced photos
 }
 
 export class SyncService {
@@ -565,6 +566,97 @@ export class SyncService {
       canBeRemoved: row.can_be_removed === 1,
       lastScannedAt: row.last_scanned_at,
     }));
+  }
+
+  /**
+   * Reprocess already-synced photos to apply album tags.
+   * This is for backwards compatibility - users who already synced photos
+   * without album preservation can run this to apply tags to source files.
+   */
+  async reprocessForAlbums(
+    accountName: string,
+    options: SyncOptions = {},
+    onProgress?: (current: number, total: number, filename: string) => void
+  ): Promise<{ tagged: number; skipped: number; failed: number }> {
+    const { limit, dryRun = config.dryRun, tagWithAlbum = false } = options;
+
+    if (!tagWithAlbum) {
+      throw new Error('--reprocess requires --tag-with-album option');
+    }
+
+    // Get all backed-up photos that have album names and source files
+    const db = getDatabase();
+    let query = `
+      SELECT id, filename, synology_path, album_name FROM photos
+      WHERE source = 'google' AND is_backed_up = 1
+        AND album_name IS NOT NULL AND album_name != ''
+        AND synology_path IS NOT NULL
+    `;
+    const params: string[] = [];
+
+    if (accountName) {
+      query += ' AND account_name = ?';
+      params.push(accountName);
+    }
+
+    query += ' ORDER BY creation_time ASC';
+
+    if (limit) {
+      query += ` LIMIT ${limit}`;
+    }
+
+    const rows = db.prepare(query).all(...params) as Array<{
+      id: string;
+      filename: string;
+      synology_path: string;
+      album_name: string;
+    }>;
+
+    logger.info(
+      `${dryRun ? '[DRY RUN] ' : ''}Reprocessing ${rows.length} backed-up photos for album tagging...`
+    );
+
+    let tagged = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    const tagWriter = new TagWriterService(dryRun);
+
+    try {
+      for (let i = 0; i < rows.length; i++) {
+        const { filename, synology_path: filePath, album_name: albumName } = rows[i];
+
+        if (onProgress) {
+          onProgress(i + 1, rows.length, filename);
+        }
+
+        // Check if source file still exists
+        if (!fs.existsSync(filePath)) {
+          logger.debug(`Source file not found for ${filename}, skipping...`);
+          skipped++;
+          continue;
+        }
+
+        try {
+          const result = await tagWriter.writeAlbumTag(filePath, albumName);
+          if (result.success) {
+            tagged++;
+          } else if (result.error?.includes('Unsupported format')) {
+            skipped++;
+          } else {
+            failed++;
+          }
+        } catch (error) {
+          logger.warn(`Error tagging ${filename}: ${error}`);
+          failed++;
+        }
+      }
+    } finally {
+      await tagWriter.close();
+    }
+
+    logger.info(`Reprocess complete: ${tagged} tagged, ${skipped} skipped, ${failed} failed`);
+    return { tagged, skipped, failed };
   }
 
   /**
