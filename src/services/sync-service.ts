@@ -14,7 +14,6 @@ import {
   PhotoRecord,
   getPhotosBySource,
   getDatabase,
-  getAlbumStats,
 } from '../models/database.js';
 
 const config = loadConfig();
@@ -322,7 +321,7 @@ export class SyncService {
           let destFolder = pairedSynology.photoLibraryPath;
           if (organizeByAlbum && albumName) {
             // Sanitize album name to be a valid folder name
-            const sanitizedAlbumName = albumName.replace(/[<>:"/\\|?*]/g, '_');
+            const sanitizedAlbumName = this.sanitizeAlbumName(albumName);
             destFolder = `${pairedSynology.photoLibraryPath}/${sanitizedAlbumName}`;
 
             // Create folder if not already created (Synology will auto-create, but we track it)
@@ -566,6 +565,20 @@ export class SyncService {
       canBeRemoved: row.can_be_removed === 1,
       lastScannedAt: row.last_scanned_at,
     }));
+  }
+
+  /**
+   * Sanitize album name to be a valid folder name.
+   * Handles invalid characters, path traversal attempts, and edge cases.
+   */
+  private sanitizeAlbumName(name: string): string {
+    return name
+      .trim()                              // Remove leading/trailing whitespace
+      .replace(/[<>:"/\\|?*]/g, '_')       // Replace invalid filesystem chars
+      .replace(/\.{2,}/g, '_')             // Prevent path traversal (.., ...)
+      .replace(/^[./\\]+/, '')             // Remove leading dots/slashes
+      .trim()                              // Trim again after replacements
+      || 'Untitled Album';                 // Fallback for empty result
   }
 
   private delay(ms: number): Promise<void> {

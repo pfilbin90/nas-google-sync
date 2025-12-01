@@ -44,7 +44,7 @@ export class TagWriterService {
       return result;
     }
 
-    if (!albumName) {
+    if (!albumName || albumName.trim() === '') {
       result.error = 'No album name provided';
       return result;
     }
