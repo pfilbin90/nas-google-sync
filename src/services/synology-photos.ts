@@ -53,18 +53,18 @@ interface SynologyFolder {
 interface SynologyAlbum {
   id: number;
   name: string;
-  item_count: number;
-  create_time: number;
-  end_time: number;
-  freeze_album: boolean;
-  owner_user_id: number;
-  passphrase: string;
-  shared: boolean;
-  sort_by: string;
-  sort_direction: string;
-  start_time: number;
-  type: string;
-  version: number;
+  item_count?: number;
+  create_time?: number;
+  end_time?: number;
+  freeze_album?: boolean;
+  owner_user_id?: number;
+  passphrase?: string;
+  shared?: boolean;
+  sort_by?: string;
+  sort_direction?: string;
+  start_time?: number;
+  type?: string;
+  version?: number;
 }
 
 export class SynologyPhotosService {
@@ -572,9 +572,16 @@ export class SynologyPhotosService {
         throw new Error(`Failed to create album "${albumName}": ${JSON.stringify(response.data.error)}`);
       }
 
-      const albumId = response.data.data?.album?.id;
+      const createdAlbum = response.data.data?.album;
+      const albumId = createdAlbum?.id;
       if (!albumId) {
         throw new Error(`Album created but no ID returned for "${albumName}"`);
+      }
+
+      // Add the newly created album to the existingAlbums cache if provided
+      // This avoids duplicate creation attempts in the same run
+      if (existingAlbums && createdAlbum) {
+        existingAlbums.push(createdAlbum);
       }
 
       logger.info(`Created album "${albumName}" (ID: ${albumId})`);
@@ -586,10 +593,11 @@ export class SynologyPhotosService {
   }
 
   /**
-   * List all folders in the photo library with automatic pagination.
+   * List folders under a specific parent folder with automatic pagination.
+   * Note: This is NOT recursive - it only lists immediate children of the parent.
    *
    * @param parentId - Parent folder ID (0 for root)
-   * @returns Array of all folders (handles pagination automatically)
+   * @returns Array of folders under the specified parent (handles pagination automatically)
    */
   async listFolders(parentId: number = 0): Promise<SynologyFolder[]> {
     if (!this.sid) {
@@ -649,6 +657,8 @@ export class SynologyPhotosService {
    * Find a photo by filename in the library.
    * Uses the Synology search API to find the photo ID.
    * Returns the Synology photo ID or null if not found.
+   *
+   * Note: Searches up to 500 results to handle edge cases with generic filenames.
    */
   async findPhotoByFilename(filename: string): Promise<number | null> {
     if (!this.sid) {
@@ -656,35 +666,48 @@ export class SynologyPhotosService {
     }
 
     try {
-      // Use the search API to find the photo by filename
-      const response = await this.client.get<SynologyApiResponse<{ list: SynologyPhoto[] }>>(
-        '/webapi/entry.cgi',
-        {
-          params: {
-            api: 'SYNO.Foto.Search.Search',
-            method: 'list_item',
-            version: 1,
-            _sid: this.sid,
-            keyword: filename,
-            offset: 0,
-            limit: 100,
-          },
+      const limit = 100;
+      const maxResults = 500; // Search up to 500 results for edge cases
+      let offset = 0;
+
+      // Search with pagination to handle generic filenames
+      while (offset < maxResults) {
+        const response = await this.client.get<SynologyApiResponse<{ list: SynologyPhoto[] }>>(
+          '/webapi/entry.cgi',
+          {
+            params: {
+              api: 'SYNO.Foto.Search.Search',
+              method: 'list_item',
+              version: 1,
+              _sid: this.sid,
+              keyword: filename,
+              offset,
+              limit,
+            },
+          }
+        );
+
+        if (!response.data.success) {
+          // Search API might not be available on this Synology version
+          logger.debug(`Search API failed for "${filename}"`);
+          return null;
         }
-      );
 
-      if (!response.data.success) {
-        // Search API might not be available on this Synology version
-        logger.debug(`Search API failed for "${filename}"`);
-        return null;
-      }
+        const items = response.data.data?.list || [];
 
-      const items = response.data.data?.list || [];
-      // Find exact match
-      const photo = items.find((item) => item.filename === filename);
+        // Find exact match in this batch
+        const photo = items.find((item) => item.filename === filename);
+        if (photo) {
+          logger.debug(`Found photo "${filename}" (ID: ${photo.id})`);
+          return photo.id;
+        }
 
-      if (photo) {
-        logger.debug(`Found photo "${filename}" (ID: ${photo.id})`);
-        return photo.id;
+        // If we got fewer items than the limit, we've seen all results
+        if (items.length < limit) {
+          break;
+        }
+
+        offset += limit;
       }
 
       logger.debug(`Photo not found: ${filename}`);
@@ -733,9 +756,15 @@ export class SynologyPhotosService {
   }
 
   /**
-   * Add photos to an album by their Synology photo IDs
+   * Add photos to an album by their Synology photo IDs.
+   * Automatically chunks large arrays to avoid query string limits.
+   *
+   * @param albumId - Synology album ID
+   * @param photoIds - Array of Synology photo IDs to add
+   * @param chunkSize - Maximum photos per API call (default: 500)
+   * @returns True if all photos were added successfully
    */
-  async addItemsToAlbum(albumId: number, photoIds: number[]): Promise<boolean> {
+  async addItemsToAlbum(albumId: number, photoIds: number[], chunkSize: number = 500): Promise<boolean> {
     if (!this.sid) {
       throw new Error('Not authenticated. Call authenticate() first.');
     }
@@ -745,23 +774,35 @@ export class SynologyPhotosService {
     }
 
     try {
-      const response = await this.client.get<SynologyApiResponse>(
-        '/webapi/entry.cgi',
-        {
-          params: {
-            api: 'SYNO.Foto.Browse.NormalAlbum',
-            method: 'add_item',
-            version: 1,
-            _sid: this.sid,
-            id: albumId,
-            item: JSON.stringify(photoIds),
-          },
-        }
-      );
+      // Split into chunks to avoid very large query strings
+      const chunks: number[][] = [];
+      for (let i = 0; i < photoIds.length; i += chunkSize) {
+        chunks.push(photoIds.slice(i, i + chunkSize));
+      }
 
-      if (!response.data.success) {
-        logger.error(`Failed to add items to album ${albumId}: ${JSON.stringify(response.data.error)}`);
-        return false;
+      // Process each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const response = await this.client.get<SynologyApiResponse>(
+          '/webapi/entry.cgi',
+          {
+            params: {
+              api: 'SYNO.Foto.Browse.NormalAlbum',
+              method: 'add_item',
+              version: 1,
+              _sid: this.sid,
+              id: albumId,
+              item: JSON.stringify(chunk),
+            },
+          }
+        );
+
+        if (!response.data.success) {
+          logger.error(`Failed to add chunk ${i + 1}/${chunks.length} to album ${albumId}: ${JSON.stringify(response.data.error)}`);
+          return false;
+        }
+
+        logger.debug(`Added chunk ${i + 1}/${chunks.length} (${chunk.length} photos) to album ${albumId}`);
       }
 
       logger.info(`Added ${photoIds.length} photos to album ${albumId}`);
@@ -773,30 +814,71 @@ export class SynologyPhotosService {
   }
 
   /**
-   * Batch lookup photo IDs by filename.
+   * Batch lookup photo IDs by filename with deduplication and optional concurrency.
    * More efficient for processing many photos.
+   *
+   * @param filenames - Array of filenames to look up
+   * @param onProgress - Optional progress callback (found count, total count)
+   * @param concurrency - Number of concurrent lookups (default: 1, max recommended: 5)
+   * @returns Map of filename to Synology photo ID
    */
   async batchFindPhotoIds(
     filenames: string[],
-    onProgress?: (found: number, total: number) => void
+    onProgress?: (found: number, total: number) => void,
+    concurrency: number = 1
   ): Promise<Map<string, number>> {
+    // Deduplicate filenames to avoid redundant lookups
+    const uniqueFilenames = [...new Set(filenames)];
     const results = new Map<string, number>();
     let found = 0;
+    let processed = 0;
 
-    // Process in smaller batches to avoid overwhelming the API
-    for (const filename of filenames) {
-      const photoId = await this.findPhotoByFilename(filename);
-      if (photoId !== null) {
-        results.set(filename, photoId);
-        found++;
+    // Clamp concurrency to reasonable bounds
+    const safeConcurrency = Math.max(1, Math.min(concurrency, 5));
+
+    if (safeConcurrency === 1) {
+      // Sequential processing (original behavior)
+      for (const filename of uniqueFilenames) {
+        const photoId = await this.findPhotoByFilename(filename);
+        if (photoId !== null) {
+          results.set(filename, photoId);
+          found++;
+        }
+
+        processed++;
+        if (onProgress) {
+          onProgress(found, uniqueFilenames.length);
+        }
+
+        // Small delay to avoid rate limiting
+        await this.delay(100);
       }
+    } else {
+      // Concurrent processing with limited parallelism
+      for (let i = 0; i < uniqueFilenames.length; i += safeConcurrency) {
+        const batch = uniqueFilenames.slice(i, i + safeConcurrency);
+        const promises = batch.map(async (filename) => {
+          const photoId = await this.findPhotoByFilename(filename);
+          return { filename, photoId };
+        });
 
-      if (onProgress) {
-        onProgress(found, filenames.length);
+        const batchResults = await Promise.all(promises);
+
+        for (const { filename, photoId } of batchResults) {
+          if (photoId !== null) {
+            results.set(filename, photoId);
+            found++;
+          }
+          processed++;
+        }
+
+        if (onProgress) {
+          onProgress(found, uniqueFilenames.length);
+        }
+
+        // Delay between batches to avoid rate limiting
+        await this.delay(100);
       }
-
-      // Small delay to avoid rate limiting
-      await this.delay(100);
     }
 
     return results;
