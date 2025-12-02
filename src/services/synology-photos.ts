@@ -349,6 +349,7 @@ export class SynologyPhotosService {
       fileSize: photo.filesize,
       hash,
       synologyPath: photoPath,
+      synologyPhotoId: photo.id, // Store Synology's internal photo ID for album management
       isBackedUp: true, // Already on NAS
       canBeRemoved: false,
       lastScannedAt: new Date().toISOString(),
