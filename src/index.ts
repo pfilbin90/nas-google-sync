@@ -222,10 +222,8 @@ program
     const config = loadConfig();
 
     try {
-      // Reprocess mode doesn't need Synology auth (only modifies local files)
-      if (!options.reprocess) {
-        await service.authenticateAll();
-      }
+      // Always authenticate - needed for sync step
+      await service.authenticateAll();
 
       const accounts = options.account
         ? [options.account]
