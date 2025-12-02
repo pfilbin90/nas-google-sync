@@ -14,6 +14,12 @@ import {
   PhotoRecord,
   getPhotosBySource,
   getDatabase,
+  getOrCreateAlbum,
+  addPhotoToAlbum,
+  updatePhotoSynologyId,
+  getPhotosNeedingAlbumSync,
+  getPhotosNeedingSynologyId,
+  getAlbumSyncStats,
 } from '../models/database.js';
 
 const config = loadConfig();
@@ -59,6 +65,21 @@ export interface SyncOptions {
   organizeByAlbum?: boolean;  // Create album folders on Synology
   tagWithAlbum?: boolean;     // Write album name to photo EXIF tags
   reprocess?: boolean;        // Re-apply album tags to already-synced photos
+}
+
+export interface FixAlbumsOptions {
+  limit?: number;
+  batchSize?: number;
+  dryRun?: boolean;
+}
+
+export interface FixAlbumsResult {
+  processed: number;
+  addedToAlbums: number;
+  albumsCreated: number;
+  photoIdsFound: number;
+  errors: number;
+  skipped: number;
 }
 
 export class SyncService {
@@ -675,6 +696,249 @@ export class SyncService {
       `Reprocess complete: ${tagged} tagged, ${queuedForResync} queued for re-upload, ${skipped} skipped, ${failed} failed`
     );
     return { tagged, skipped, failed, queuedForResync };
+  }
+
+  /**
+   * Retroactively add already-uploaded photos to Synology Photos albums.
+   * This uses the Synology Photos API to create albums and add photos to them.
+   */
+  async fixAlbumsRetroactively(
+    accountName: string,
+    options: FixAlbumsOptions = {},
+    onProgress?: (current: number, total: number, filename: string, status: string) => void
+  ): Promise<FixAlbumsResult> {
+    const { limit, batchSize = 100, dryRun = false } = options;
+
+    // Find the paired Synology account
+    const pairedSynology = getPairedSynologyAccount(config, accountName);
+    if (!pairedSynology) {
+      throw new Error(
+        `No Synology account paired with "${accountName}". ` +
+        `Configure PAIRING_*_GOOGLE and PAIRING_*_SYNOLOGY in .env`
+      );
+    }
+
+    const synologyService = this.synologyServices.get(pairedSynology.name);
+    if (!synologyService) {
+      throw new Error(`Synology service not found for account: ${pairedSynology.name}`);
+    }
+
+    const result: FixAlbumsResult = {
+      processed: 0,
+      addedToAlbums: 0,
+      albumsCreated: 0,
+      photoIdsFound: 0,
+      errors: 0,
+      skipped: 0,
+    };
+
+    // Phase 1: Find Synology photo IDs for photos that don't have them yet
+    logger.info('Phase 1: Looking up Synology photo IDs for backed-up photos...');
+    const photosNeedingIds = getPhotosNeedingSynologyId(accountName);
+    const idsToFind = limit ? photosNeedingIds.slice(0, limit) : photosNeedingIds;
+
+    if (idsToFind.length > 0) {
+      logger.info(`Found ${idsToFind.length} photos needing Synology photo ID lookup`);
+
+      for (let i = 0; i < idsToFind.length; i++) {
+        const photo = idsToFind[i];
+
+        if (onProgress) {
+          onProgress(i + 1, idsToFind.length, photo.filename, 'Looking up ID');
+        }
+
+        try {
+          const synologyPhotoId = await synologyService.findPhotoByFilename(photo.filename);
+
+          if (synologyPhotoId !== null) {
+            if (!dryRun) {
+              updatePhotoSynologyId(photo.id, synologyPhotoId);
+            }
+            result.photoIdsFound++;
+            logger.debug(`Found Synology ID for ${photo.filename}: ${synologyPhotoId}`);
+          } else {
+            result.skipped++;
+            logger.debug(`Could not find Synology ID for ${photo.filename}`);
+          }
+        } catch (error) {
+          logger.warn(`Error looking up photo ID for ${photo.filename}: ${error}`);
+          result.errors++;
+        }
+
+        // Rate limiting
+        await this.delay(200);
+      }
+
+      logger.info(`Phase 1 complete: Found ${result.photoIdsFound} photo IDs, skipped ${result.skipped}`);
+    } else {
+      logger.info('Phase 1: All photos already have Synology photo IDs');
+    }
+
+    // Phase 2: Add photos to albums
+    logger.info('Phase 2: Adding photos to Synology albums...');
+    let photosToSync = getPhotosNeedingAlbumSync(accountName);
+
+    if (limit) {
+      photosToSync = photosToSync.slice(0, limit);
+    }
+
+    if (photosToSync.length === 0) {
+      logger.info('Phase 2: No photos need album assignment');
+      return result;
+    }
+
+    logger.info(`Found ${photosToSync.length} photos needing album assignment`);
+
+    // Group photos by album for efficient batch processing
+    const photosByAlbum = new Map<string, PhotoRecord[]>();
+    for (const photo of photosToSync) {
+      if (!photo.albumName) {
+        result.skipped++;
+        continue;
+      }
+
+      // Skip photos without Synology photo ID
+      if (!photo.synologyPhotoId) {
+        result.skipped++;
+        continue;
+      }
+
+      if (!photosByAlbum.has(photo.albumName)) {
+        photosByAlbum.set(photo.albumName, []);
+      }
+      photosByAlbum.get(photo.albumName)!.push(photo);
+    }
+
+    // Cache for album IDs to avoid repeated API calls
+    const albumIdCache = new Map<string, number>();
+
+    // Process each album
+    for (const [albumName, photos] of photosByAlbum.entries()) {
+      try {
+        logger.info(`Processing album "${albumName}" (${photos.length} photos)`);
+
+        let synologyAlbumId: number;
+
+        // Get or create the album in Synology
+        if (albumIdCache.has(albumName)) {
+          synologyAlbumId = albumIdCache.get(albumName)!;
+        } else {
+          if (!dryRun) {
+            // Check if album exists, create if not
+            const existingAlbums = await synologyService.listAlbums();
+            const existing = existingAlbums.find(a => a.name === albumName);
+
+            if (existing) {
+              synologyAlbumId = existing.id;
+            } else {
+              synologyAlbumId = await synologyService.getOrCreateAlbum(albumName);
+              result.albumsCreated++;
+            }
+
+            albumIdCache.set(albumName, synologyAlbumId);
+          } else {
+            logger.info(`[DRY RUN] Would create/get album "${albumName}"`);
+            synologyAlbumId = 0; // Placeholder for dry run
+          }
+        }
+
+        // Get local album record
+        let albumRecord;
+        if (!dryRun) {
+          albumRecord = getOrCreateAlbum(accountName, albumName, synologyAlbumId);
+        }
+
+        // Process photos in batches
+        for (let i = 0; i < photos.length; i += batchSize) {
+          const batch = photos.slice(i, i + batchSize);
+          const photoIdsToAdd: number[] = [];
+
+          for (const photo of batch) {
+            if (onProgress) {
+              onProgress(
+                result.processed + 1,
+                photosToSync.length,
+                photo.filename,
+                `Adding to "${albumName}"`
+              );
+            }
+
+            if (photo.synologyPhotoId) {
+              photoIdsToAdd.push(photo.synologyPhotoId);
+            }
+            result.processed++;
+          }
+
+          if (photoIdsToAdd.length > 0) {
+            if (!dryRun) {
+              // Add batch to album via API
+              const success = await synologyService.addItemsToAlbum(synologyAlbumId, photoIdsToAdd);
+
+              if (success) {
+                // Update database records
+                for (const photo of batch) {
+                  if (photo.synologyPhotoId && albumRecord) {
+                    addPhotoToAlbum(photo.id, albumRecord.id);
+                    result.addedToAlbums++;
+                  }
+                }
+              } else {
+                result.errors += batch.length;
+              }
+            } else {
+              logger.info(`[DRY RUN] Would add ${photoIdsToAdd.length} photos to album "${albumName}"`);
+              result.addedToAlbums += photoIdsToAdd.length;
+            }
+          }
+
+          // Rate limiting - small delay between batches
+          await this.delay(1000);
+        }
+      } catch (error) {
+        logger.error(`Error processing album "${albumName}": ${error}`);
+        result.errors += photos.length;
+        result.processed += photos.length;
+      }
+    }
+
+    logger.info(
+      `Fix albums complete: ${result.processed} processed, ${result.addedToAlbums} added to albums, ` +
+      `${result.albumsCreated} albums created, ${result.errors} errors`
+    );
+
+    return result;
+  }
+
+  /**
+   * Get album sync status for an account
+   */
+  getAlbumStatus(accountName: string): {
+    totalWithAlbums: number;
+    syncedToAlbums: number;
+    needingSync: number;
+    needingPhotoId: number;
+    albums: Map<string, { needsSync: number; synced: number }>;
+  } {
+    const stats = getAlbumSyncStats(accountName);
+    const needingIds = getPhotosNeedingSynologyId(accountName);
+
+    let totalWithAlbums = 0;
+    let syncedToAlbums = 0;
+    let needingSync = 0;
+
+    for (const [, { needsSync, synced }] of stats) {
+      totalWithAlbums += needsSync + synced;
+      syncedToAlbums += synced;
+      needingSync += needsSync;
+    }
+
+    return {
+      totalWithAlbums,
+      syncedToAlbums,
+      needingSync,
+      needingPhotoId: needingIds.length,
+      albums: stats,
+    };
   }
 
   /**

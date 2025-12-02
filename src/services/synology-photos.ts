@@ -50,6 +50,23 @@ interface SynologyFolder {
   sort_direction: string;
 }
 
+interface SynologyAlbum {
+  id: number;
+  name: string;
+  item_count: number;
+  create_time: number;
+  end_time: number;
+  freeze_album: boolean;
+  owner_user_id: number;
+  passphrase: string;
+  shared: boolean;
+  sort_by: string;
+  sort_direction: string;
+  start_time: number;
+  type: string;
+  version: number;
+}
+
 export class SynologyPhotosService {
   private config: SynologyAccountConfig;
   private client: AxiosInstance;
@@ -449,6 +466,287 @@ export class SynologyPhotosService {
       logger.error(`Failed to create folder ${folderName}: ${error}`);
       return null;
     }
+  }
+
+  // ===== Album Management API Methods =====
+
+  /**
+   * List all albums for the authenticated user
+   */
+  async listAlbums(offset: number = 0, limit: number = 1000): Promise<SynologyAlbum[]> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    try {
+      const response = await this.client.get<SynologyApiResponse<{ list: SynologyAlbum[] }>>(
+        '/webapi/entry.cgi',
+        {
+          params: {
+            api: 'SYNO.Foto.Browse.Album',
+            method: 'list',
+            version: 1,
+            _sid: this.sid,
+            offset,
+            limit,
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        throw new Error(`Failed to list albums: ${JSON.stringify(response.data.error)}`);
+      }
+
+      return response.data.data?.list || [];
+    } catch (error) {
+      logger.error(`Failed to list albums: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get or create an album by name.
+   * Returns the Synology album ID.
+   */
+  async getOrCreateAlbum(albumName: string): Promise<number> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    // First, try to find existing album
+    const albums = await this.listAlbums();
+    const existing = albums.find((a) => a.name === albumName);
+
+    if (existing) {
+      logger.debug(`Found existing album "${albumName}" (ID: ${existing.id})`);
+      return existing.id;
+    }
+
+    // Create new album
+    try {
+      const response = await this.client.post<SynologyApiResponse<{ album: SynologyAlbum }>>(
+        '/webapi/entry.cgi',
+        null,
+        {
+          params: {
+            api: 'SYNO.Foto.Browse.Album',
+            method: 'create',
+            version: 1,
+            _sid: this.sid,
+            name: albumName,
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        throw new Error(`Failed to create album "${albumName}": ${JSON.stringify(response.data.error)}`);
+      }
+
+      const albumId = response.data.data?.album?.id;
+      if (!albumId) {
+        throw new Error(`Album created but no ID returned for "${albumName}"`);
+      }
+
+      logger.info(`Created album "${albumName}" (ID: ${albumId})`);
+      return albumId;
+    } catch (error) {
+      logger.error(`Failed to create album "${albumName}": ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * List folders in the photo library
+   */
+  async listFolders(parentId: number = 0): Promise<SynologyFolder[]> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    try {
+      const response = await this.client.get<SynologyApiResponse<{ list: SynologyFolder[] }>>(
+        '/webapi/entry.cgi',
+        {
+          params: {
+            api: 'SYNO.Foto.Browse.Folder',
+            method: 'list',
+            version: 1,
+            _sid: this.sid,
+            id: parentId,
+            offset: 0,
+            limit: 1000,
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        logger.warn(`Failed to list folders: ${JSON.stringify(response.data.error)}`);
+        return [];
+      }
+
+      return response.data.data?.list || [];
+    } catch (error) {
+      logger.error(`Failed to list folders: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Find a photo by filename in the library.
+   * Uses the Synology search API to find the photo ID.
+   * Returns the Synology photo ID or null if not found.
+   */
+  async findPhotoByFilename(filename: string): Promise<number | null> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    try {
+      // Use the search API to find the photo by filename
+      const response = await this.client.get<SynologyApiResponse<{ list: SynologyPhoto[] }>>(
+        '/webapi/entry.cgi',
+        {
+          params: {
+            api: 'SYNO.Foto.Search.Search',
+            method: 'list_item',
+            version: 1,
+            _sid: this.sid,
+            keyword: filename,
+            offset: 0,
+            limit: 100,
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        // Search API might not be available, try alternative method
+        logger.debug(`Search API failed for "${filename}", trying browse API...`);
+        return null;
+      }
+
+      const items = response.data.data?.list || [];
+      // Find exact match
+      const photo = items.find((item) => item.filename === filename);
+
+      if (photo) {
+        logger.debug(`Found photo "${filename}" (ID: ${photo.id})`);
+        return photo.id;
+      }
+
+      logger.debug(`Photo not found: ${filename}`);
+      return null;
+    } catch (error) {
+      logger.debug(`Error searching for photo "${filename}": ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Get photos in a folder by folder ID
+   */
+  async getPhotosInFolder(folderId: number, offset: number = 0, limit: number = 1000): Promise<SynologyPhoto[]> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    try {
+      const response = await this.client.get<SynologyApiResponse<{ list: SynologyPhoto[] }>>(
+        '/webapi/entry.cgi',
+        {
+          params: {
+            api: 'SYNO.Foto.Browse.Item',
+            method: 'list',
+            version: 1,
+            _sid: this.sid,
+            folder_id: folderId,
+            offset,
+            limit,
+            additional: JSON.stringify(['thumbnail']),
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        logger.warn(`Failed to list items in folder ${folderId}: ${JSON.stringify(response.data.error)}`);
+        return [];
+      }
+
+      return response.data.data?.list || [];
+    } catch (error) {
+      logger.error(`Failed to list items in folder ${folderId}: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Add photos to an album by their Synology photo IDs
+   */
+  async addItemsToAlbum(albumId: number, photoIds: number[]): Promise<boolean> {
+    if (!this.sid) {
+      throw new Error('Not authenticated. Call authenticate() first.');
+    }
+
+    if (photoIds.length === 0) {
+      return true;
+    }
+
+    try {
+      const response = await this.client.post<SynologyApiResponse>(
+        '/webapi/entry.cgi',
+        null,
+        {
+          params: {
+            api: 'SYNO.Foto.Browse.Album',
+            method: 'add_item',
+            version: 1,
+            _sid: this.sid,
+            id: albumId,
+            item: JSON.stringify(photoIds),
+          },
+        }
+      );
+
+      if (!response.data.success) {
+        logger.error(`Failed to add items to album ${albumId}: ${JSON.stringify(response.data.error)}`);
+        return false;
+      }
+
+      logger.info(`Added ${photoIds.length} photos to album ${albumId}`);
+      return true;
+    } catch (error) {
+      logger.error(`Failed to add items to album ${albumId}: ${error}`);
+      return false;
+    }
+  }
+
+  /**
+   * Batch lookup photo IDs by filename.
+   * More efficient for processing many photos.
+   */
+  async batchFindPhotoIds(
+    filenames: string[],
+    onProgress?: (found: number, total: number) => void
+  ): Promise<Map<string, number>> {
+    const results = new Map<string, number>();
+    let found = 0;
+
+    // Process in smaller batches to avoid overwhelming the API
+    for (const filename of filenames) {
+      const photoId = await this.findPhotoByFilename(filename);
+      if (photoId !== null) {
+        results.set(filename, photoId);
+        found++;
+      }
+
+      if (onProgress) {
+        onProgress(found, filenames.length);
+      }
+
+      // Small delay to avoid rate limiting
+      await this.delay(100);
+    }
+
+    return results;
   }
 
   private delay(ms: number): Promise<void> {

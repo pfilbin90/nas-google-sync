@@ -24,6 +24,16 @@ export interface PhotoRecord {
   canBeRemoved: boolean;
   lastScannedAt: string;
   albumName?: string;  // Album/folder name from Google Takeout
+  synologyPhotoId?: number;  // Synology Photos internal ID for album management
+}
+
+export interface AlbumRecord {
+  id: number;
+  synologyAlbumId: number;
+  accountName: string;
+  name: string;
+  createdAt: string;
+  lastSyncedAt: string;
 }
 
 export interface StorageStats {
@@ -100,6 +110,35 @@ function initializeSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_photos_creation_time ON photos(creation_time);
     CREATE INDEX IF NOT EXISTS idx_photos_source_account ON photos(source, account_name);
     CREATE INDEX IF NOT EXISTS idx_photos_filename ON photos(filename);
+
+    -- Albums table for tracking Synology Photos albums
+    CREATE TABLE IF NOT EXISTS albums (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      synology_album_id INTEGER NOT NULL,
+      account_name TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      last_synced_at TEXT NOT NULL,
+      UNIQUE(account_name, synology_album_id),
+      UNIQUE(account_name, name)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_albums_account_name ON albums(account_name);
+    CREATE INDEX IF NOT EXISTS idx_albums_synology_id ON albums(synology_album_id);
+
+    -- Junction table for photos in albums
+    CREATE TABLE IF NOT EXISTS album_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      album_id INTEGER NOT NULL,
+      photo_id TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      FOREIGN KEY (album_id) REFERENCES albums(id),
+      FOREIGN KEY (photo_id) REFERENCES photos(id),
+      UNIQUE(album_id, photo_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_album_items_album_id ON album_items(album_id);
+    CREATE INDEX IF NOT EXISTS idx_album_items_photo_id ON album_items(photo_id);
   `);
 
   // Add album_name column if it doesn't exist (for existing databases)
@@ -123,6 +162,27 @@ function initializeSchema(database: Database.Database): void {
     }
   }
 
+  // Add synology_photo_id column for album management (for existing databases)
+  try {
+    database.exec(`ALTER TABLE photos ADD COLUMN synology_photo_id INTEGER`);
+    logger.info('Added synology_photo_id column to photos table');
+  } catch (e: any) {
+    // Ignore "duplicate column name" errors, but re-throw others
+    if (!e.message?.includes('duplicate column name')) {
+      throw e;
+    }
+  }
+
+  // Create index on synology_photo_id after column is added
+  try {
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_photos_synology_photo_id ON photos(synology_photo_id)`);
+  } catch (e: any) {
+    // Index might already exist, ignore
+    if (!e.message?.includes('already exists')) {
+      logger.warn(`Could not create synology_photo_id index: ${e.message}`);
+    }
+  }
+
   logger.info('Database schema initialized');
 }
 
@@ -132,9 +192,10 @@ export function insertPhoto(photo: PhotoRecord): void {
     INSERT OR REPLACE INTO photos (
       id, source, account_name, filename, mime_type, creation_time,
       width, height, file_size, hash, google_media_item_id, synology_path,
-      is_backed_up, backed_up_at, can_be_removed, last_scanned_at, album_name
+      is_backed_up, backed_up_at, can_be_removed, last_scanned_at, album_name,
+      synology_photo_id
     ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `);
 
@@ -155,7 +216,8 @@ export function insertPhoto(photo: PhotoRecord): void {
     photo.backedUpAt,
     photo.canBeRemoved ? 1 : 0,
     photo.lastScannedAt,
-    photo.albumName
+    photo.albumName,
+    photo.synologyPhotoId
   );
 }
 
@@ -333,6 +395,18 @@ function mapRowToPhoto(row: any): PhotoRecord {
     canBeRemoved: row.can_be_removed === 1,
     lastScannedAt: row.last_scanned_at,
     albumName: row.album_name,
+    synologyPhotoId: row.synology_photo_id,
+  };
+}
+
+function mapRowToAlbum(row: any): AlbumRecord {
+  return {
+    id: row.id,
+    synologyAlbumId: row.synology_album_id,
+    accountName: row.account_name,
+    name: row.name,
+    createdAt: row.created_at,
+    lastSyncedAt: row.last_synced_at,
   };
 }
 
@@ -381,6 +455,178 @@ export function getPhotosByAlbum(albumName: string, accountName?: string): Photo
 
   const rows = database.prepare(query).all(...params) as any[];
   return rows.map(mapRowToPhoto);
+}
+
+/**
+ * Get or create an album record in the database
+ */
+export function getOrCreateAlbum(accountName: string, albumName: string, synologyAlbumId: number): AlbumRecord {
+  const database = getDatabase();
+
+  // Try to find existing
+  const existing = database.prepare(`
+    SELECT * FROM albums WHERE account_name = ? AND name = ?
+  `).get(accountName, albumName) as any;
+
+  if (existing) {
+    return mapRowToAlbum(existing);
+  }
+
+  // Create new
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO albums (synology_album_id, account_name, name, created_at, last_synced_at)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(synologyAlbumId, accountName, albumName, now, now);
+
+  // Fetch the newly created record
+  const newRecord = database.prepare(`
+    SELECT * FROM albums WHERE account_name = ? AND name = ?
+  `).get(accountName, albumName) as any;
+
+  return mapRowToAlbum(newRecord);
+}
+
+/**
+ * Get album by name for an account
+ */
+export function getAlbumByName(accountName: string, albumName: string): AlbumRecord | null {
+  const database = getDatabase();
+  const row = database.prepare(`
+    SELECT * FROM albums WHERE account_name = ? AND name = ?
+  `).get(accountName, albumName) as any;
+
+  return row ? mapRowToAlbum(row) : null;
+}
+
+/**
+ * Add a photo to an album (tracks locally that photo is in album)
+ */
+export function addPhotoToAlbum(photoId: string, albumId: number): void {
+  const database = getDatabase();
+  database.prepare(`
+    INSERT OR IGNORE INTO album_items (album_id, photo_id, added_at)
+    VALUES (?, ?, ?)
+  `).run(albumId, photoId, new Date().toISOString());
+}
+
+/**
+ * Check if a photo is already in an album
+ */
+export function isPhotoInAlbum(photoId: string, albumId: number): boolean {
+  const database = getDatabase();
+  const result = database.prepare(`
+    SELECT 1 FROM album_items WHERE album_id = ? AND photo_id = ?
+  `).get(albumId, photoId);
+  return !!result;
+}
+
+/**
+ * Update the Synology photo ID for a photo
+ */
+export function updatePhotoSynologyId(photoId: string, synologyPhotoId: number): void {
+  const database = getDatabase();
+  database.prepare(`
+    UPDATE photos SET synology_photo_id = ? WHERE id = ?
+  `).run(synologyPhotoId, photoId);
+}
+
+/**
+ * Get photos that need album sync:
+ * - From Google source
+ * - Already backed up to Synology
+ * - Have an album name
+ * - Have a Synology photo ID (so we can add them to albums)
+ * - Not yet added to the album in our tracking
+ */
+export function getPhotosNeedingAlbumSync(accountName: string): PhotoRecord[] {
+  const database = getDatabase();
+  const rows = database.prepare(`
+    SELECT p.* FROM photos p
+    WHERE p.source = 'google'
+      AND p.account_name = ?
+      AND p.is_backed_up = 1
+      AND p.album_name IS NOT NULL
+      AND p.album_name != ''
+      AND NOT EXISTS (
+        SELECT 1 FROM album_items ai
+        JOIN albums a ON ai.album_id = a.id
+        WHERE ai.photo_id = p.id
+          AND a.name = p.album_name
+          AND a.account_name = p.account_name
+      )
+    ORDER BY p.album_name, p.creation_time
+  `).all(accountName) as any[];
+
+  return rows.map(mapRowToPhoto);
+}
+
+/**
+ * Get photos that need Synology photo ID lookup:
+ * - From Google source
+ * - Already backed up to Synology
+ * - Have an album name (will need album assignment)
+ * - Don't have a Synology photo ID yet
+ */
+export function getPhotosNeedingSynologyId(accountName: string): PhotoRecord[] {
+  const database = getDatabase();
+  const rows = database.prepare(`
+    SELECT * FROM photos
+    WHERE source = 'google'
+      AND account_name = ?
+      AND is_backed_up = 1
+      AND album_name IS NOT NULL
+      AND album_name != ''
+      AND synology_photo_id IS NULL
+    ORDER BY album_name, creation_time
+  `).all(accountName) as any[];
+
+  return rows.map(mapRowToPhoto);
+}
+
+/**
+ * Get count of photos needing album sync per album
+ */
+export function getAlbumSyncStats(accountName: string): Map<string, { needsSync: number; synced: number }> {
+  const database = getDatabase();
+
+  // Get all photos with albums
+  const allPhotos = database.prepare(`
+    SELECT album_name, COUNT(*) as count FROM photos
+    WHERE source = 'google'
+      AND account_name = ?
+      AND is_backed_up = 1
+      AND album_name IS NOT NULL
+      AND album_name != ''
+    GROUP BY album_name
+  `).all(accountName) as Array<{ album_name: string; count: number }>;
+
+  // Get photos already synced to albums
+  const syncedPhotos = database.prepare(`
+    SELECT p.album_name, COUNT(*) as count FROM photos p
+    JOIN album_items ai ON ai.photo_id = p.id
+    JOIN albums a ON ai.album_id = a.id AND a.name = p.album_name
+    WHERE p.source = 'google'
+      AND p.account_name = ?
+      AND p.is_backed_up = 1
+    GROUP BY p.album_name
+  `).all(accountName) as Array<{ album_name: string; count: number }>;
+
+  const syncedMap = new Map<string, number>();
+  for (const row of syncedPhotos) {
+    syncedMap.set(row.album_name, row.count);
+  }
+
+  const stats = new Map<string, { needsSync: number; synced: number }>();
+  for (const row of allPhotos) {
+    const synced = syncedMap.get(row.album_name) || 0;
+    stats.set(row.album_name, {
+      needsSync: row.count - synced,
+      synced,
+    });
+  }
+
+  return stats;
 }
 
 export function closeDatabase(): void {

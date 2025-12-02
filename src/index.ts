@@ -3,7 +3,7 @@
 import { Command } from 'commander';
 import { loadConfig } from './config.js';
 import { logger } from './utils/logger.js';
-import { SyncService, AnalysisReport, SyncOptions } from './services/sync-service.js';
+import { SyncService, AnalysisReport, SyncOptions, FixAlbumsOptions } from './services/sync-service.js';
 import { extractTakeoutZip } from './services/google-takeout.js';
 import { getPhotoStats, closeDatabase, getDatabase, getAlbumStats } from './models/database.js';
 
@@ -513,10 +513,82 @@ program
       console.log('\nTo preserve album structure during sync, use:');
       console.log('  --organize-by-album  Create folders on Synology');
       console.log('  --tag-with-album     Embed album in photo tags\n');
+      console.log('To retroactively add photos to Synology albums:');
+      console.log('  npm run start -- fix-albums --account <name>\n');
     } catch (error) {
       logger.error(`Album listing failed: ${error}`);
       process.exit(1);
     } finally {
+      closeDatabase();
+    }
+  });
+
+program
+  .command('fix-albums')
+  .description('Retroactively add already-uploaded photos to Synology Photos albums')
+  .option('-a, --account <name>', 'Google account name to process')
+  .option('-n, --limit <number>', 'Limit number of photos to process (for testing)')
+  .option('--batch-size <number>', 'Number of photos to add per batch', '100')
+  .option('--dry-run', 'Preview without making changes')
+  .action(async (options) => {
+    const service = new SyncService();
+    const config = loadConfig();
+
+    try {
+      await service.authenticateAll();
+
+      const accounts = options.account
+        ? [options.account]
+        : config.googleAccounts.map(a => a.name);
+
+      for (const accountName of accounts) {
+        // First, show current status
+        console.log(`\n========== Album Sync Status for ${accountName} ==========\n`);
+
+        const status = service.getAlbumStatus(accountName);
+        console.log(`  Photos with album assignments: ${status.totalWithAlbums}`);
+        console.log(`  Already in Synology albums: ${status.syncedToAlbums}`);
+        console.log(`  Needing album assignment: ${status.needingSync}`);
+        console.log(`  Needing Synology photo ID: ${status.needingPhotoId}`);
+
+        if (status.needingSync === 0 && status.needingPhotoId === 0) {
+          console.log('\n  All photos are already in their albums!\n');
+          continue;
+        }
+
+        console.log('\n');
+
+        const fixOptions: FixAlbumsOptions = {
+          limit: options.limit ? parseInt(options.limit, 10) : undefined,
+          batchSize: parseInt(options.batchSize, 10) || 100,
+          dryRun: options.dryRun || false,
+        };
+
+        console.log(`${options.dryRun ? '[DRY RUN] ' : ''}Fixing albums for ${accountName}...`);
+
+        const result = await service.fixAlbumsRetroactively(
+          accountName,
+          fixOptions,
+          (current, total, filename, status) => {
+            process.stdout.write(`\r[${current}/${total}] ${filename} - ${status}                    `);
+          }
+        );
+
+        console.log('\n');
+        console.log('========== FIX ALBUMS RESULTS ==========');
+        console.log(`  Photos processed: ${result.processed}`);
+        console.log(`  Photo IDs found: ${result.photoIdsFound}`);
+        console.log(`  Albums created: ${result.albumsCreated}`);
+        console.log(`  Added to albums: ${result.addedToAlbums}`);
+        console.log(`  Skipped: ${result.skipped}`);
+        console.log(`  Errors: ${result.errors}`);
+        console.log('========================================\n');
+      }
+    } catch (error) {
+      logger.error(`Fix albums failed: ${error}`);
+      process.exit(1);
+    } finally {
+      await service.cleanup();
       closeDatabase();
     }
   });

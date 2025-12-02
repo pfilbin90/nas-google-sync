@@ -173,6 +173,7 @@ Each person then deletes from their **own** Google Photos account based on their
 | `node dist/index.js import <path> --account <name>` | Import a Google Takeout folder |
 | `node dist/index.js sync --account <name>` | Upload new photos to Synology |
 | `node dist/index.js albums` | List albums detected from Google Takeout |
+| `node dist/index.js fix-albums --account <name>` | Add already-uploaded photos to Synology albums |
 | `node dist/index.js retag <path>` | Apply album tags to photos in a takeout folder |
 | `node dist/index.js export --format dates --account <name>` | Show backed-up photos for that account |
 | `node dist/index.js inspect` | Verify duplicate detection is working |
@@ -234,42 +235,47 @@ node dist/index.js sync --account mygoogle --no-tag-with-album
 
 > **Note:** The `--tag-with-album` option requires `exiftool` (bundled automatically). It only works on supported image formats (JPEG, PNG, TIFF, HEIC). Videos are skipped for tagging.
 
-### Automatic Album Tag Fixes
+### Fix Albums Command (Retroactive Album Assignment)
 
-**By default, every sync automatically fixes previously-synced photos.** The tool will:
-
-1. **Step 1 (Reprocess):**
-   - Finds photos already on Synology that need album tags
-   - Tags the source files in your Takeout folder
-   - Marks them for re-upload
-
-2. **Step 2 (Sync):**
-   - Re-uploads tagged photos (overwrites existing files on Synology)
-   - Uploads any new photos
-   - Synology Photos automatically reads album tags from EXIF metadata
-
-This two-step process is completely automatic - you don't need any special flags:
+If you've already uploaded photos to Synology before enabling album preservation, you can retroactively add them to Synology Photos albums:
 
 ```bash
-# Normal sync - automatically fixes old photos AND syncs new ones
-node dist/index.js sync --account mygoogle
+# Add already-uploaded photos to Synology albums
+node dist/index.js fix-albums --account mygoogle
 
-# Skip the reprocessing step if you only want new uploads
-node dist/index.js sync --account mygoogle --no-reprocess
+# Preview what would happen without making changes
+node dist/index.js fix-albums --account mygoogle --dry-run
+
+# Process only 100 photos (for testing)
+node dist/index.js fix-albums --account mygoogle -n 100
+
+# Control batch size (default: 100)
+node dist/index.js fix-albums --account mygoogle --batch-size 50
 ```
 
 **How it works:**
-1. Photos already on Synology get their source files tagged with album names (XMP:Subject, IPTC:Keywords)
-2. These photos are re-uploaded to Synology, overwriting the existing files
-3. Synology Photos automatically reads the EXIF tags and shows them as "General tags"
-4. You can then create albums in Synology Photos using these tags
+1. **Phase 1:** Looks up Synology photo IDs for your backed-up photos
+2. **Phase 2:** Creates albums in Synology Photos and adds photos to them
 
-**What gets reprocessed:**
-- Photos that were backed up before album preservation was enabled
-- Photos in your Takeout folder that haven't been tagged yet
-- Only photos with album names detected from folder structure
+This uses the Synology Photos API directly, so albums appear in the Synology Photos UI immediately - no EXIF tags or re-uploads needed.
 
-> **Important:** Reprocessing requires your Google Takeout source files to still exist. If you've deleted your Takeout files, only new photos will be tagged.
+**Progress tracking:**
+The command shows status before processing:
+```text
+========== Album Sync Status for mygoogle ==========
+  Photos with album assignments: 15,000
+  Already in Synology albums: 0
+  Needing album assignment: 15,000
+  Needing Synology photo ID: 15,000
+```
+
+**Performance considerations:**
+- Processing 70,000+ photos can take several hours
+- The tool processes 100 photos per batch by default
+- Use `--batch-size` to adjust if you have rate limiting issues
+- Use `-n` to test with a small number first
+
+> **Note:** This requires photos to already be uploaded to Synology Photos and indexed. Run a `scan` first if you just uploaded photos.
 
 ### Retag Command (Tag Without Syncing)
 
