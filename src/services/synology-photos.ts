@@ -569,6 +569,24 @@ export class SynologyPhotosService {
       );
 
       if (!response.data.success) {
+        const errorCode = response.data.error?.code;
+
+        // Handle concurrent creation: if album was created by another process between our check and create,
+        // treat it as success by re-fetching the album list to find the existing album
+        // Common error code for "already exists": 408 (duplicate name)
+        if (errorCode === 408) {
+          logger.debug(`Album "${albumName}" already exists (concurrent creation), fetching existing album`);
+          const refreshedAlbums = await this.listAlbums();
+          const existing = refreshedAlbums.find((a) => a.name === albumName);
+
+          if (existing) {
+            if (existingAlbums) {
+              existingAlbums.push(existing);
+            }
+            return { albumId: existing.id, wasCreated: false };
+          }
+        }
+
         throw new Error(`Failed to create album "${albumName}": ${JSON.stringify(response.data.error)}`);
       }
 
@@ -598,6 +616,7 @@ export class SynologyPhotosService {
    *
    * @param parentId - Parent folder ID (0 for root)
    * @returns Array of folders under the specified parent (handles pagination automatically)
+   * @throws Error if the first page fails (distinguishes hard failure from empty folder)
    */
   async listFolders(parentId: number = 0): Promise<SynologyFolder[]> {
     if (!this.sid) {
@@ -626,8 +645,13 @@ export class SynologyPhotosService {
         );
 
         if (!response.data.success) {
-          logger.warn(`Failed to list folders: ${JSON.stringify(response.data.error)}`);
-          return allFolders; // Return what we have so far
+          // If we fail on the first page with no data yet, throw to indicate hard failure
+          if (allFolders.length === 0) {
+            throw new Error(`Failed to list folders: ${JSON.stringify(response.data.error)}`);
+          }
+          // If we got some folders already, log warning and return what we have
+          logger.warn(`Partial failure listing folders (got ${allFolders.length} so far): ${JSON.stringify(response.data.error)}`);
+          return allFolders;
         }
 
         const folders = response.data.data?.list || [];
@@ -648,8 +672,14 @@ export class SynologyPhotosService {
       logger.debug(`Listed ${allFolders.length} folders from Synology Photos`);
       return allFolders;
     } catch (error) {
-      logger.error(`Failed to list folders: ${error}`);
-      return allFolders; // Return what we have so far
+      // If we fail with no data, rethrow to indicate hard failure
+      if (allFolders.length === 0) {
+        logger.error(`Failed to list folders: ${error}`);
+        throw error;
+      }
+      // If we got partial data, log and return what we have
+      logger.warn(`Partial failure listing folders (got ${allFolders.length}): ${error}`);
+      return allFolders;
     }
   }
 
@@ -659,6 +689,9 @@ export class SynologyPhotosService {
    * Returns the Synology photo ID or null if not found.
    *
    * Note: Searches up to 500 results to handle edge cases with generic filenames.
+   *
+   * @throws Error on network failures or unexpected API errors (distinguishes from "not found")
+   * @returns Photo ID if found, null if not found or search API unavailable
    */
   async findPhotoByFilename(filename: string): Promise<number | null> {
     if (!this.sid) {
@@ -688,9 +721,17 @@ export class SynologyPhotosService {
         );
 
         if (!response.data.success) {
-          // Search API might not be available on this Synology version
-          logger.debug(`Search API failed for "${filename}"`);
-          return null;
+          const errorCode = response.data.error?.code;
+
+          // Gracefully handle "API not available" or "method not found" errors
+          // These indicate the search API isn't supported on this Synology version
+          if (errorCode === 101 || errorCode === 102 || errorCode === 103) {
+            logger.debug(`Search API not available for "${filename}" (error ${errorCode})`);
+            return null;
+          }
+
+          // For other API errors, throw to distinguish from "not found"
+          throw new Error(`Search API error for "${filename}": ${JSON.stringify(response.data.error)}`);
         }
 
         const items = response.data.data?.list || [];
@@ -713,8 +754,16 @@ export class SynologyPhotosService {
       logger.debug(`Photo not found: ${filename}`);
       return null;
     } catch (error) {
-      logger.debug(`Error searching for photo "${filename}": ${error}`);
-      return null;
+      // Network errors and unexpected failures should be thrown to indicate transient issues
+      // Only log as debug if it's our own graceful "API not available" error
+      if (error instanceof Error && error.message.includes('not available')) {
+        logger.debug(error.message);
+        return null;
+      }
+
+      // Rethrow unexpected errors (network, auth, etc.) so caller can handle or retry
+      logger.warn(`Error searching for photo "${filename}": ${error}`);
+      throw error;
     }
   }
 
@@ -830,24 +879,25 @@ export class SynologyPhotosService {
     // Deduplicate filenames to avoid redundant lookups
     const uniqueFilenames = [...new Set(filenames)];
     const results = new Map<string, number>();
-    let found = 0;
-    let processed = 0;
 
     // Clamp concurrency to reasonable bounds
     const safeConcurrency = Math.max(1, Math.min(concurrency, 5));
+
+    // Helper to process a single filename lookup and update results
+    const processLookup = (filename: string, photoId: number | null) => {
+      if (photoId !== null) {
+        results.set(filename, photoId);
+      }
+    };
 
     if (safeConcurrency === 1) {
       // Sequential processing (original behavior)
       for (const filename of uniqueFilenames) {
         const photoId = await this.findPhotoByFilename(filename);
-        if (photoId !== null) {
-          results.set(filename, photoId);
-          found++;
-        }
+        processLookup(filename, photoId);
 
-        processed++;
         if (onProgress) {
-          onProgress(found, uniqueFilenames.length);
+          onProgress(results.size, uniqueFilenames.length);
         }
 
         // Small delay to avoid rate limiting
@@ -865,15 +915,11 @@ export class SynologyPhotosService {
         const batchResults = await Promise.all(promises);
 
         for (const { filename, photoId } of batchResults) {
-          if (photoId !== null) {
-            results.set(filename, photoId);
-            found++;
-          }
-          processed++;
+          processLookup(filename, photoId);
         }
 
         if (onProgress) {
-          onProgress(found, uniqueFilenames.length);
+          onProgress(results.size, uniqueFilenames.length);
         }
 
         // Delay between batches to avoid rate limiting
