@@ -121,7 +121,7 @@ program
       console.log('\n====================================\n');
 
       if (result.newPhotos > 0) {
-        console.log(`Run 'npm run sync -- --account ${options.account}' to upload to Synology.\n`);
+        console.log(`Run 'npm run start -- sync --account ${options.account}' to upload to Synology.\n`);
         if (result.albumsFound.size > 0) {
           console.log('Album preservation options:');
           console.log('  --organize-by-album  Create album folders on Synology');

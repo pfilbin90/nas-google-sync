@@ -310,20 +310,12 @@ export class SyncService {
         }
 
         try {
-          // Write album tag to photo if requested
-          if (tagWithAlbum && tagWriter && albumName) {
-            const tagResult = await tagWriter.writeAlbumTag(filePath, albumName);
-            if (tagResult.success) {
-              tagged++;
-            }
-          }
-
           // Determine destination folder
           let destFolder = pairedSynology.photoLibraryPath;
           if (organizeByAlbum && albumName) {
             // Sanitize album name to be a valid folder name
             const sanitizedAlbumName = this.sanitizeAlbumName(albumName);
-            destFolder = `${pairedSynology.photoLibraryPath}/${sanitizedAlbumName}`;
+            destFolder = path.join(pairedSynology.photoLibraryPath, sanitizedAlbumName);
 
             // Create folder if not already created (Synology will auto-create, but we track it)
             if (!createdFolders.has(sanitizedAlbumName)) {
@@ -344,6 +336,14 @@ export class SyncService {
             const success = await synologyService.uploadPhoto(buffer, photo.filename, destFolder);
 
             if (success) {
+              // Write album tag to photo after successful upload
+              if (tagWithAlbum && tagWriter && albumName) {
+                const tagResult = await tagWriter.writeAlbumTag(filePath, albumName);
+                if (tagResult.success) {
+                  tagged++;
+                }
+              }
+
               markAsBackedUp(photo.id);
               synced++;
               logger.info(`Synced: ${photo.filename}`);
@@ -602,7 +602,8 @@ export class SyncService {
     query += ' ORDER BY creation_time ASC';
 
     if (limit) {
-      query += ` LIMIT ${limit}`;
+      query += ' LIMIT ?';
+      params.push(String(limit));
     }
 
     const rows = db.prepare(query).all(...params) as Array<{

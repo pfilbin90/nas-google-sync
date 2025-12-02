@@ -64,8 +64,15 @@ export class TagWriterService {
         return result;
       }
 
-      // Read existing tags to preserve them
-      const existingTags = await this.readTags(filePath);
+      // Read existing tags to preserve them (may throw if file is locked/corrupted)
+      let existingTags: string[] = [];
+      try {
+        existingTags = await this.readTags(filePath);
+      } catch (readError) {
+        // If we can't read existing tags, proceed with just the new album tag
+        logger.warn(`Could not read existing tags from ${filePath}, proceeding with album tag only`);
+      }
+
       const mergedTags = [...new Set([...existingTags, albumName])];
 
       // Write album name to multiple metadata fields for maximum compatibility:
@@ -76,14 +83,23 @@ export class TagWriterService {
         'Subject': mergedTags,
         'Keywords': mergedTags,
         'HierarchicalSubject': [`Album|${albumName}`],
-      }, {
-        writeArgs: ['-overwrite_original'],  // Don't create backup files
       });
+
+      // Clean up backup file created by exiftool
+      const backupPath = `${filePath}_original`;
+      if (fs.existsSync(backupPath)) {
+        fs.unlinkSync(backupPath);
+      }
 
       logger.debug(`Tagged ${path.basename(filePath)} with album: ${albumName}`);
       result.success = true;
-    } catch (error) {
-      result.error = `Failed to write tag: ${error}`;
+    } catch (error: any) {
+      // Better TOCTOU error handling
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        result.error = 'File not found or was deleted';
+      } else {
+        result.error = `Failed to write tag: ${error}`;
+      }
       logger.warn(`Failed to write tag to ${filePath}: ${error}`);
     }
 
@@ -156,8 +172,8 @@ export class TagWriterService {
 
       return [...new Set(keywords)]; // Remove duplicates
     } catch (error) {
-      logger.warn(`Failed to read tags from ${filePath}: ${error}`);
-      return [];
+      logger.error(`Failed to read tags from ${filePath}: ${error}`);
+      throw new Error(`Cannot read existing tags: ${error}`);
     }
   }
 
