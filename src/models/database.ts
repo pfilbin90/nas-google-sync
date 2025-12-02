@@ -100,7 +100,6 @@ function initializeSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_photos_creation_time ON photos(creation_time);
     CREATE INDEX IF NOT EXISTS idx_photos_source_account ON photos(source, account_name);
     CREATE INDEX IF NOT EXISTS idx_photos_filename ON photos(filename);
-    CREATE INDEX IF NOT EXISTS idx_photos_album_name ON photos(album_name);
   `);
 
   // Add album_name column if it doesn't exist (for existing databases)
@@ -111,6 +110,16 @@ function initializeSchema(database: Database.Database): void {
     // Ignore "duplicate column name" errors, but re-throw others
     if (!e.message?.includes('duplicate column name')) {
       throw e;
+    }
+  }
+
+  // Create index on album_name after column is added
+  try {
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_photos_album_name ON photos(album_name)`);
+  } catch (e: any) {
+    // Index might already exist, ignore
+    if (!e.message?.includes('already exists')) {
+      logger.warn(`Could not create album_name index: ${e.message}`);
     }
   }
 

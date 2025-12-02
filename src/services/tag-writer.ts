@@ -39,11 +39,6 @@ export class TagWriterService {
       albumName,
     };
 
-    if (!fs.existsSync(filePath)) {
-      result.error = 'File not found';
-      return result;
-    }
-
     if (!albumName || albumName.trim() === '') {
       result.error = 'No album name provided';
       return result;
@@ -64,13 +59,14 @@ export class TagWriterService {
         return result;
       }
 
-      // Read existing tags to preserve them (may throw if file is locked/corrupted)
-      let existingTags: string[] = [];
+      // Read existing tags to preserve them - treat as hard failure if we can't read
+      let existingTags: string[];
       try {
         existingTags = await this.readTags(filePath);
       } catch (readError) {
-        // If we can't read existing tags, proceed with just the new album tag
-        logger.warn(`Could not read existing tags from ${filePath}, proceeding with album tag only`);
+        result.error = `Cannot read existing tags: ${readError}`;
+        logger.error(`Failed to read tags from ${filePath}: ${readError}`);
+        return result;
       }
 
       const mergedTags = [...new Set([...existingTags, albumName])];
@@ -87,8 +83,13 @@ export class TagWriterService {
 
       // Clean up backup file created by exiftool
       const backupPath = `${filePath}_original`;
-      if (fs.existsSync(backupPath)) {
-        fs.unlinkSync(backupPath);
+      try {
+        if (fs.existsSync(backupPath)) {
+          fs.unlinkSync(backupPath);
+        }
+      } catch (cleanupError) {
+        // Don't fail the whole operation if cleanup fails
+        logger.warn(`Could not clean up backup file ${backupPath}: ${cleanupError}`);
       }
 
       logger.debug(`Tagged ${path.basename(filePath)} with album: ${albumName}`);
