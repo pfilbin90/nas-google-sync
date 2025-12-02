@@ -216,13 +216,11 @@ program
   .option('--organize-by-album', 'Create album folders on Synology and organize photos into them')
   .option('--tag-with-album', 'Write album name to photo EXIF tags (default: true, use --no-tag-with-album to disable)')
   .option('--no-tag-with-album', 'Skip writing album tags to photo EXIF metadata')
-  .option('--no-reprocess', 'Skip re-tagging photos that were already synced (default: reprocess is enabled)')
   .action(async (options) => {
     const service = new SyncService();
     const config = loadConfig();
 
     try {
-      // Always authenticate - needed for sync step
       await service.authenticateAll();
 
       const accounts = options.account
@@ -231,38 +229,13 @@ program
 
       for (const accountName of accounts) {
         const tagWithAlbum = options.tagWithAlbum !== false; // Default true unless --no-tag-with-album
-        const shouldReprocess = options.noReprocess !== true; // Default true unless --no-reprocess
 
-        // Reprocess step: Apply album tags to already-synced photos (enabled by default)
-        if (shouldReprocess && tagWithAlbum) {
-          console.log(`\n[1/2] Reprocessing ${accountName} - Applying tags to already-synced photos...`);
-
-          const reprocessOptions: SyncOptions = {
-            limit: options.limit ? parseInt(options.limit, 10) : undefined,
-            dryRun: options.dryRun,
-            tagWithAlbum: true,
-            reprocess: true,
-          };
-
-          const reprocessResult = await service.reprocessForAlbums(
-            accountName,
-            reprocessOptions,
-            (current, total, filename) => {
-              process.stdout.write(`\r[${current}/${total}] ${filename}...`);
-            }
-          );
-
-          console.log(`\n${accountName} [Reprocess]: Tagged ${reprocessResult.tagged}, Queued for re-upload ${reprocessResult.queuedForResync}, Skipped ${reprocessResult.skipped}, Failed ${reprocessResult.failed}\n`);
-        }
-
-        // Normal sync step: Upload new photos to Synology
         const modeInfo = [];
         if (options.organizeByAlbum) modeInfo.push('organizing by album');
         if (tagWithAlbum) modeInfo.push('tagging with album');
         const modeStr = modeInfo.length > 0 ? ` (${modeInfo.join(', ')})` : '';
 
-        const stepPrefix = (shouldReprocess && tagWithAlbum) ? '[2/2] ' : '';
-        console.log(`${stepPrefix}Syncing ${accountName} to Synology${modeStr}...`);
+        console.log(`\nSyncing ${accountName} to Synology${modeStr}...`);
 
         const syncOptions: SyncOptions = {
           limit: options.limit ? parseInt(options.limit, 10) : undefined,

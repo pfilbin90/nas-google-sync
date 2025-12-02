@@ -64,7 +64,6 @@ export interface SyncOptions {
   dryRun?: boolean;
   organizeByAlbum?: boolean;  // Create album folders on Synology
   tagWithAlbum?: boolean;     // Write album name to photo EXIF tags
-  reprocess?: boolean;        // Re-apply album tags to already-synced photos
 }
 
 export interface FixAlbumsOptions {
@@ -585,116 +584,6 @@ export class SyncService {
       canBeRemoved: row.can_be_removed === 1,
       lastScannedAt: row.last_scanned_at,
     }));
-  }
-
-  /**
-   * Reprocess already-synced photos to apply album tags.
-   *
-   * This tags source files with album names and marks them for re-upload.
-   * When re-uploaded, Synology Photos will automatically read the EXIF tags.
-   */
-  async reprocessForAlbums(
-    accountName: string,
-    options: SyncOptions = {},
-    onProgress?: (current: number, total: number, filename: string) => void
-  ): Promise<{ tagged: number; skipped: number; failed: number; queuedForResync: number }> {
-    const { limit, dryRun = config.dryRun, tagWithAlbum = false } = options;
-
-    if (!tagWithAlbum) {
-      throw new Error('--reprocess requires --tag-with-album option');
-    }
-
-    // Get all backed-up photos that have album names and source files
-    const db = getDatabase();
-    let query = `
-      SELECT id, filename, synology_path, album_name FROM photos
-      WHERE source = 'google' AND is_backed_up = 1
-        AND album_name IS NOT NULL AND album_name != ''
-        AND synology_path IS NOT NULL
-    `;
-    const params: string[] = [];
-
-    if (accountName) {
-      query += ' AND account_name = ?';
-      params.push(accountName);
-    }
-
-    query += ' ORDER BY creation_time ASC';
-
-    if (limit) {
-      query += ' LIMIT ?';
-      params.push(String(limit));
-    }
-
-    const rows = db.prepare(query).all(...params) as Array<{
-      id: string;
-      filename: string;
-      synology_path: string;
-      album_name: string;
-    }>;
-
-    logger.info(
-      `${dryRun ? '[DRY RUN] ' : ''}Reprocessing ${rows.length} backed-up photos for album tagging...`
-    );
-
-    let tagged = 0;
-    let skipped = 0;
-    let failed = 0;
-    let queuedForResync = 0;
-
-    const tagWriter = new TagWriterService(dryRun);
-
-    // Prepare statement for clearing is_backed_up flag
-    const clearBackupStmt = db.prepare(`
-      UPDATE photos SET is_backed_up = 0, backed_up_at = NULL WHERE id = ?
-    `);
-
-    try {
-      for (let i = 0; i < rows.length; i++) {
-        const { id, filename, synology_path: filePath, album_name: albumName } = rows[i];
-
-        if (onProgress) {
-          onProgress(i + 1, rows.length, filename);
-        }
-
-        // Check if source file still exists
-        if (!fs.existsSync(filePath)) {
-          logger.debug(`Source file not found for ${filename}, skipping...`);
-          skipped++;
-          continue;
-        }
-
-        try {
-          const result = await tagWriter.writeAlbumTag(filePath, albumName);
-          if (result.success) {
-            tagged++;
-
-            // Clear is_backed_up flag so this photo will be re-uploaded
-            // The re-upload will overwrite the file on Synology with the tagged version
-            if (!dryRun) {
-              clearBackupStmt.run(id);
-              queuedForResync++;
-              logger.debug(`Queued ${filename} for re-upload with album tags`);
-            }
-          } else if (result.errorType === 'unsupported_format') {
-            skipped++;
-          } else {
-            failed++;
-          }
-        } catch (error) {
-          logger.warn(`Error tagging ${filename}: ${error}`);
-          failed++;
-        }
-      }
-    } finally {
-      // Don't close tagWriter here - exiftool is a singleton that may be used by subsequent operations
-      // It will be closed in the CLI command's cleanup
-    }
-
-    logger.info(
-      `Reprocess complete: ${tagged} tagged, ${queuedForResync} queued for re-upload, ${skipped} skipped, ${failed} failed`
-    );
-    return { tagged, skipped, failed, queuedForResync };
   }
 
   /**
