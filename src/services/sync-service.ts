@@ -239,7 +239,7 @@ export class SyncService {
     options: SyncOptions = {},
     onProgress?: (current: number, total: number, filename: string) => void
   ): Promise<{ synced: number; failed: number; skipped: number; tagged: number }> {
-    const { limit, dryRun = config.dryRun, organizeByAlbum = false, tagWithAlbum = false } = options;
+    const { limit, dryRun = config.dryRun, organizeByAlbum = false, tagWithAlbum = true } = options;
 
     // Find the paired Synology account
     const pairedSynology = getPairedSynologyAccount(config, accountName);

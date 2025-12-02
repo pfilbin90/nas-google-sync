@@ -198,51 +198,65 @@ node dist/index.js sync --account mygoogle --dry-run
 
 > **Tip:** If you have thousands of photos, consider starting with `-n 50` to make sure everything works, then run without `-n` to upload the rest.
 
-### Album Preservation Options
+### Album Preservation
 
-Google Takeout organizes photos into folders matching your album names (e.g., `Trip to Florida/`, `Family Reunion 2023/`). By default, the tool uploads all photos to a flat folder. Use these options to preserve your album structure:
+Google Takeout organizes photos into folders matching your album names (e.g., `Trip to Florida/`, `Family Reunion 2023/`). **By default, album names are automatically embedded in photo EXIF tags** (XMP:Subject and IPTC:Keywords fields) so you can create albums in Synology Photos later.
 
 ```bash
-# Create album folders on Synology
+# Default behavior - uploads photos with album tags embedded
+node dist/index.js sync --account mygoogle
+
+# Also create album folders on Synology (in addition to tags)
 # Photos go into /Photos/AlbumName/ subfolders
 node dist/index.js sync --account mygoogle --organize-by-album
 
-# Embed album name in photo EXIF tags
-# Writes to XMP:Subject and IPTC:Keywords fields
-node dist/index.js sync --account mygoogle --tag-with-album
-
-# Both options together
-node dist/index.js sync --account mygoogle --organize-by-album --tag-with-album
+# Skip album tagging if you don't want it
+node dist/index.js sync --account mygoogle --no-tag-with-album
 ```
 
 | Option | What it does |
 |--------|--------------|
+| *(default)* | Embeds album name in photo metadata (XMP:Subject, Keywords). Synology Photos can create albums from these tags later |
 | `--organize-by-album` | Creates folders on Synology matching album names. Photos upload to `/Photos/Trip to Florida/` instead of `/Photos/` |
-| `--tag-with-album` | Embeds album name in photo metadata (XMP:Subject, Keywords). Synology Photos can create albums from these tags later |
+| `--no-tag-with-album` | Skips embedding album names in EXIF tags (not recommended) |
 
-**Which should I use?**
+**When to use `--organize-by-album`?**
 
-- **`--organize-by-album`** - Best for folder-based organization. Photos appear in album folders in Synology File Station.
-- **`--tag-with-album`** - Best for tag-based albums. Use Synology Photos' "Filter by tag" feature to create albums, or create smart albums based on keywords.
-- **Both** - Maximum flexibility. Photos are organized in folders AND have embedded tags.
+- You want folder-based organization in Synology File Station
+- You want both folder structure AND embedded tags
+- You're okay with more complex folder structures
+
+**When to use `--no-tag-with-album`?**
+
+- You're concerned about modifying original photo files
+- You have very large files and want faster sync times
+- You only want folder-based organization (use with `--organize-by-album`)
 
 > **Note:** The `--tag-with-album` option requires `exiftool` (bundled automatically). It only works on supported image formats (JPEG, PNG, TIFF, HEIC). Videos are skipped for tagging.
 
-### Already Synced Photos? Use --reprocess
+### Automatic Album Tag Fixes
 
-If you already synced photos without album preservation, you can apply album tags to them retroactively:
+**By default, every sync automatically fixes previously-synced photos.** The tool will:
+
+1. **Step 1:** Find photos that were already synced and apply album tags to their source files
+2. **Step 2:** Upload any new photos to Synology
+
+This two-step process is completely automatic - you don't need any special flags. Just run:
 
 ```bash
-# Apply album tags to already-synced photos (requires source files to still exist)
-node dist/index.js sync --account mygoogle --reprocess --tag-with-album
+# Normal sync - automatically fixes old photos AND syncs new ones
+node dist/index.js sync --account mygoogle
 
-# Preview what would be tagged
-node dist/index.js sync --account mygoogle --reprocess --tag-with-album --dry-run
+# Skip the reprocessing step if you only want new uploads
+node dist/index.js sync --account mygoogle --no-reprocess
 ```
 
-This finds photos that were already synced but still have their source files in the takeout folder, and applies the album tags to them.
+**What gets reprocessed:**
+- Photos that were backed up before album preservation was enabled
+- Photos in your Takeout folder that haven't been tagged yet
+- Only photos with album names detected from folder structure
 
-> **Important:** This only works if you haven't deleted your Google Takeout files yet. The tags are written to the source files, not to files already on Synology.
+> **Important:** Reprocessing requires your Google Takeout source files to still exist. Tags are written to the source files in the Takeout folder, not to files already on Synology. If you've deleted your Takeout files, only new photos will be tagged.
 
 ### Retag Command (Tag Without Syncing)
 

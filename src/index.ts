@@ -214,8 +214,9 @@ program
   .option('-n, --limit <number>', 'Limit number of photos to sync (default: all)')
   .option('--dry-run', 'Show what would be synced without actually syncing')
   .option('--organize-by-album', 'Create album folders on Synology and organize photos into them')
-  .option('--tag-with-album', 'Write album name to photo EXIF tags (XMP:Subject and Keywords)')
-  .option('--reprocess', 'Re-apply album tags to photos already synced (requires --tag-with-album)')
+  .option('--tag-with-album', 'Write album name to photo EXIF tags (default: true, use --no-tag-with-album to disable)')
+  .option('--no-tag-with-album', 'Skip writing album tags to photo EXIF metadata')
+  .option('--no-reprocess', 'Skip re-tagging photos that were already synced (default: reprocess is enabled)')
   .action(async (options) => {
     const service = new SyncService();
     const config = loadConfig();
@@ -231,63 +232,60 @@ program
         : config.googleAccounts.map(a => a.name);
 
       for (const accountName of accounts) {
-        const modeInfo = [];
-        if (options.reprocess) modeInfo.push('reprocessing');
-        if (options.organizeByAlbum) modeInfo.push('organizing by album');
-        if (options.tagWithAlbum) modeInfo.push('tagging with album');
-        const modeStr = modeInfo.length > 0 ? ` (${modeInfo.join(', ')})` : '';
+        const tagWithAlbum = options.tagWithAlbum !== false; // Default true unless --no-tag-with-album
+        const shouldReprocess = options.noReprocess !== true; // Default true unless --no-reprocess
 
-        if (options.reprocess) {
-          // Reprocess mode: apply album tags to already-synced photos
-          if (!options.tagWithAlbum) {
-            console.error('\nError: --reprocess requires --tag-with-album option');
-            console.log('This applies album tags to photos that were already synced.\n');
-            process.exit(1);
-          }
+        // Reprocess step: Apply album tags to already-synced photos (enabled by default)
+        if (shouldReprocess && tagWithAlbum) {
+          console.log(`\n[1/2] Reprocessing ${accountName} - Applying tags to already-synced photos...`);
 
-          console.log(`\nReprocessing ${accountName} for album tagging...`);
-
-          const syncOptions: SyncOptions = {
+          const reprocessOptions: SyncOptions = {
             limit: options.limit ? parseInt(options.limit, 10) : undefined,
             dryRun: options.dryRun,
             tagWithAlbum: true,
             reprocess: true,
           };
 
-          const result = await service.reprocessForAlbums(
+          const reprocessResult = await service.reprocessForAlbums(
             accountName,
-            syncOptions,
+            reprocessOptions,
             (current, total, filename) => {
               process.stdout.write(`\r[${current}/${total}] ${filename}...`);
             }
           );
 
-          console.log(`\n${accountName}: Tagged ${result.tagged}, Skipped ${result.skipped}, Failed ${result.failed}`);
-        } else {
-          // Normal sync mode
-          console.log(`\nSyncing ${accountName} to Synology${modeStr}...`);
-
-          const syncOptions: SyncOptions = {
-            limit: options.limit ? parseInt(options.limit, 10) : undefined,
-            dryRun: options.dryRun,
-            organizeByAlbum: options.organizeByAlbum,
-            tagWithAlbum: options.tagWithAlbum,
-          };
-
-          const result = await service.syncToSynology(
-            accountName,
-            syncOptions,
-            (current, total, filename) => {
-              process.stdout.write(`\r[${current}/${total}] ${filename}...`);
-            }
-          );
-
-          let summary = `\n${accountName}: Synced ${result.synced}, Failed ${result.failed}, Skipped ${result.skipped}`;
-          if (result.tagged > 0) {
-            summary += `, Tagged ${result.tagged}`;
-          }
-          console.log(summary);
+          console.log(`\n${accountName} [Reprocess]: Tagged ${reprocessResult.tagged}, Skipped ${reprocessResult.skipped}, Failed ${reprocessResult.failed}\n`);
         }
+
+        // Normal sync step: Upload new photos to Synology
+        const modeInfo = [];
+        if (options.organizeByAlbum) modeInfo.push('organizing by album');
+        if (tagWithAlbum) modeInfo.push('tagging with album');
+        const modeStr = modeInfo.length > 0 ? ` (${modeInfo.join(', ')})` : '';
+
+        const stepPrefix = (shouldReprocess && tagWithAlbum) ? '[2/2] ' : '';
+        console.log(`${stepPrefix}Syncing ${accountName} to Synology${modeStr}...`);
+
+        const syncOptions: SyncOptions = {
+          limit: options.limit ? parseInt(options.limit, 10) : undefined,
+          dryRun: options.dryRun,
+          organizeByAlbum: options.organizeByAlbum,
+          tagWithAlbum: tagWithAlbum,
+        };
+
+        const result = await service.syncToSynology(
+          accountName,
+          syncOptions,
+          (current, total, filename) => {
+            process.stdout.write(`\r[${current}/${total}] ${filename}...`);
+          }
+        );
+
+        let summary = `\n${accountName} [Sync]: Synced ${result.synced}, Failed ${result.failed}, Skipped ${result.skipped}`;
+        if (result.tagged > 0) {
+          summary += `, Tagged ${result.tagged}`;
+        }
+        console.log(summary);
       }
     } catch (error) {
       logger.error(`Sync failed: ${error}`);
