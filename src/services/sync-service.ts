@@ -485,7 +485,7 @@ export class SyncService {
       if (account.photosNotBackedUp > 0) {
         recommendations.push(
           `${account.name} has ${account.photosNotBackedUp} photos from Google Takeout not yet synced to Synology. ` +
-          `Run 'npm run sync -- --account ${account.name}' to sync them.`
+          `Run 'npm run start -- sync --account ${account.name}' to sync them.`
         );
       }
 
@@ -707,7 +707,9 @@ export class SyncService {
     options: FixAlbumsOptions = {},
     onProgress?: (current: number, total: number, filename: string, status: string) => void
   ): Promise<FixAlbumsResult> {
-    const { limit, batchSize = 100, dryRun = false } = options;
+    const { limit, dryRun = false } = options;
+    // Ensure batchSize is always at least 1 to prevent infinite loops
+    const batchSize = Math.max(1, Math.floor(options.batchSize ?? 100));
 
     // Find the paired Synology account
     const pairedSynology = getPairedSynologyAccount(config, accountName);

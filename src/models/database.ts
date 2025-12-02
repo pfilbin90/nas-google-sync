@@ -548,6 +548,7 @@ export function getPhotosNeedingAlbumSync(accountName: string): PhotoRecord[] {
       AND p.is_backed_up = 1
       AND p.album_name IS NOT NULL
       AND p.album_name != ''
+      AND p.synology_photo_id IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM album_items ai
         JOIN albums a ON ai.album_id = a.id

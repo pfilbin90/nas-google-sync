@@ -558,9 +558,16 @@ program
 
         console.log('\n');
 
+        // Validate batchSize
+        const parsedBatchSize = parseInt(options.batchSize, 10);
+        if (!Number.isFinite(parsedBatchSize) || parsedBatchSize <= 0) {
+          console.error(`\nError: Invalid batch-size "${options.batchSize}". Must be a positive number.\n`);
+          process.exit(1);
+        }
+
         const fixOptions: FixAlbumsOptions = {
           limit: options.limit ? parseInt(options.limit, 10) : undefined,
-          batchSize: parseInt(options.batchSize, 10) || 100,
+          batchSize: parsedBatchSize,
           dryRun: options.dryRun || false,
         };
 

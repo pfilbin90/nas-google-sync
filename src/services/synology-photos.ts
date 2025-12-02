@@ -619,8 +619,8 @@ export class SynologyPhotosService {
       );
 
       if (!response.data.success) {
-        // Search API might not be available, try alternative method
-        logger.debug(`Search API failed for "${filename}", trying browse API...`);
+        // Search API might not be available on this Synology version
+        logger.debug(`Search API failed for "${filename}"`);
         return null;
       }
 
