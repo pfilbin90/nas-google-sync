@@ -188,8 +188,40 @@ function initializeSchema(database: Database.Database): void {
 
 export function insertPhoto(photo: PhotoRecord): void {
   const database = getDatabase();
+  // Use ON CONFLICT DO UPDATE instead of INSERT OR REPLACE to avoid
+  // deleting and re-inserting, which would violate foreign key constraints
+  // from album_items table.
+  // Handle all unique constraints by checking for existing records first.
+
+  // First, check if a record exists with the same synology_path (but different id)
+  // This can happen when re-importing the same files
+  if (photo.synologyPath) {
+    const existing = database.prepare(`
+      SELECT id FROM photos WHERE source = ? AND synology_path = ? AND id != ?
+    `).get(photo.source, photo.synologyPath, photo.id) as { id: string } | undefined;
+
+    if (existing) {
+      // Update the existing record instead of inserting a new one
+      database.prepare(`
+        UPDATE photos SET
+          account_name = ?, filename = ?, mime_type = ?, creation_time = ?,
+          width = ?, height = ?, file_size = ?, hash = ?, google_media_item_id = ?,
+          is_backed_up = ?, backed_up_at = ?, can_be_removed = ?, last_scanned_at = ?,
+          album_name = ?, synology_photo_id = ?
+        WHERE id = ?
+      `).run(
+        photo.accountName, photo.filename, photo.mimeType, photo.creationTime,
+        photo.width, photo.height, photo.fileSize, photo.hash, photo.googleMediaItemId,
+        photo.isBackedUp ? 1 : 0, photo.backedUpAt, photo.canBeRemoved ? 1 : 0,
+        photo.lastScannedAt, photo.albumName, photo.synologyPhotoId,
+        existing.id
+      );
+      return;
+    }
+  }
+
   const stmt = database.prepare(`
-    INSERT OR REPLACE INTO photos (
+    INSERT INTO photos (
       id, source, account_name, filename, mime_type, creation_time,
       width, height, file_size, hash, google_media_item_id, synology_path,
       is_backed_up, backed_up_at, can_be_removed, last_scanned_at, album_name,
@@ -197,6 +229,24 @@ export function insertPhoto(photo: PhotoRecord): void {
     ) VALUES (
       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
+    ON CONFLICT(id) DO UPDATE SET
+      source = excluded.source,
+      account_name = excluded.account_name,
+      filename = excluded.filename,
+      mime_type = excluded.mime_type,
+      creation_time = excluded.creation_time,
+      width = excluded.width,
+      height = excluded.height,
+      file_size = excluded.file_size,
+      hash = excluded.hash,
+      google_media_item_id = excluded.google_media_item_id,
+      synology_path = excluded.synology_path,
+      is_backed_up = excluded.is_backed_up,
+      backed_up_at = excluded.backed_up_at,
+      can_be_removed = excluded.can_be_removed,
+      last_scanned_at = excluded.last_scanned_at,
+      album_name = excluded.album_name,
+      synology_photo_id = excluded.synology_photo_id
   `);
 
   stmt.run(
