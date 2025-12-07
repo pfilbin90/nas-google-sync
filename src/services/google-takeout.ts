@@ -62,6 +62,16 @@ export interface TakeoutScanResult {
   albumsFound: Map<string, number>;  // Album name -> photo count
 }
 
+export interface ScanOptions {
+  concurrency?: number;  // Number of parallel file processing workers (default: 4)
+}
+
+interface FileToProcess {
+  fullPath: string;
+  ext: string;
+  albumName: string | undefined;
+}
+
 export class GoogleTakeoutService {
   private accountName: string;
 
@@ -69,8 +79,13 @@ export class GoogleTakeoutService {
     this.accountName = accountName;
   }
 
-  async scanTakeoutFolder(folderPath: string, onProgress?: (count: number) => void): Promise<TakeoutScanResult> {
-    logger.info(`Scanning Google Takeout folder for ${this.accountName}: ${folderPath}`);
+  async scanTakeoutFolder(
+    folderPath: string,
+    onProgress?: (count: number) => void,
+    options?: ScanOptions
+  ): Promise<TakeoutScanResult> {
+    const concurrency = options?.concurrency ?? 4;
+    logger.info(`Scanning Google Takeout folder for ${this.accountName}: ${folderPath} (concurrency: ${concurrency})`);
 
     if (!fs.existsSync(folderPath)) {
       throw new Error(`Takeout folder not found: ${folderPath}`);
@@ -85,8 +100,57 @@ export class GoogleTakeoutService {
       albumsFound: new Map(),
     };
 
-    // Store the root path so we can determine album names relative to it
-    await this.scanDirectory(folderPath, folderPath, result, onProgress);
+    // Phase 1: Quickly collect all files to process (fast, single-threaded directory walk)
+    const filesToProcess: FileToProcess[] = [];
+    this.collectFiles(folderPath, folderPath, filesToProcess);
+
+    logger.info(`Found ${filesToProcess.length} media files to process`);
+
+    // Phase 2: Process files in parallel batches
+    let processedCount = 0;
+
+    // Process in chunks to control concurrency
+    for (let i = 0; i < filesToProcess.length; i += concurrency) {
+      const batch = filesToProcess.slice(i, i + concurrency);
+
+      const batchResults = await Promise.all(
+        batch.map(async (file) => {
+          try {
+            const photo = await this.processMediaFile(file.fullPath, file.albumName);
+            return { photo, file, error: null };
+          } catch (error) {
+            return { photo: null, file, error: `Error processing ${file.fullPath}: ${error}` };
+          }
+        })
+      );
+
+      // Collect results from this batch
+      for (const { photo, file, error } of batchResults) {
+        if (error) {
+          result.errors.push(error);
+          logger.warn(error);
+        } else if (photo) {
+          result.photos.push(photo);
+          result.totalSize += photo.fileSize;
+
+          if (IMAGE_EXTENSIONS.includes(file.ext)) {
+            result.totalPhotos++;
+          } else if (VIDEO_EXTENSIONS.includes(file.ext)) {
+            result.totalVideos++;
+          }
+
+          // Track album statistics
+          if (file.albumName) {
+            result.albumsFound.set(file.albumName, (result.albumsFound.get(file.albumName) || 0) + 1);
+          }
+        }
+        processedCount++;
+      }
+
+      if (onProgress) {
+        onProgress(processedCount);
+      }
+    }
 
     logger.info(
       `Takeout scan complete for ${this.accountName}: ` +
@@ -98,55 +162,27 @@ export class GoogleTakeoutService {
     return result;
   }
 
-  private async scanDirectory(
+  /**
+   * Quickly collect all media files without processing them (fast directory walk)
+   */
+  private collectFiles(
     dirPath: string,
     rootPath: string,
-    result: TakeoutScanResult,
-    onProgress?: (count: number) => void
-  ): Promise<void> {
+    files: FileToProcess[]
+  ): void {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 
     for (const entry of entries) {
       const fullPath = path.join(dirPath, entry.name);
 
       if (entry.isDirectory()) {
-        // Recursively scan subdirectories
-        await this.scanDirectory(fullPath, rootPath, result, onProgress);
+        this.collectFiles(fullPath, rootPath, files);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
 
-        // Skip metadata JSON files and non-media files
-        if (ext === '.json' || !SUPPORTED_EXTENSIONS.includes(ext)) {
-          continue;
-        }
-
-        try {
-          // Extract album name from folder path
+        if (ext !== '.json' && SUPPORTED_EXTENSIONS.includes(ext)) {
           const albumName = this.extractAlbumName(dirPath, rootPath);
-
-          const photo = await this.processMediaFile(fullPath, albumName);
-          if (photo) {
-            result.photos.push(photo);
-            result.totalSize += photo.fileSize;
-
-            if (IMAGE_EXTENSIONS.includes(ext)) {
-              result.totalPhotos++;
-            } else if (VIDEO_EXTENSIONS.includes(ext)) {
-              result.totalVideos++;
-            }
-
-            // Track album statistics
-            if (albumName) {
-              result.albumsFound.set(albumName, (result.albumsFound.get(albumName) || 0) + 1);
-            }
-
-            if (onProgress) {
-              onProgress(result.photos.length);
-            }
-          }
-        } catch (error) {
-          result.errors.push(`Error processing ${fullPath}: ${error}`);
-          logger.warn(`Error processing file ${fullPath}: ${error}`);
+          files.push({ fullPath, ext, albumName });
         }
       }
     }

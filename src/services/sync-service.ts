@@ -141,7 +141,8 @@ export class SyncService {
   async importFromTakeout(
     takeoutPath: string,
     accountName: string,
-    onProgress?: (count: number) => void
+    onProgress?: (count: number) => void,
+    options?: { concurrency?: number }
   ): Promise<ImportResult> {
     logger.info(`Importing Google Takeout for ${accountName} from: ${takeoutPath}`);
 
@@ -157,7 +158,9 @@ export class SyncService {
 
     // Scan the takeout folder
     const takeoutService = new GoogleTakeoutService(accountName);
-    const scanResult = await takeoutService.scanTakeoutFolder(takeoutPath, onProgress);
+    const scanResult = await takeoutService.scanTakeoutFolder(takeoutPath, onProgress, {
+      concurrency: options?.concurrency,
+    });
 
     result.totalScanned = scanResult.photos.length;
     result.errors = scanResult.errors;

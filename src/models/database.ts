@@ -186,20 +186,36 @@ function initializeSchema(database: Database.Database): void {
   logger.info('Database schema initialized');
 }
 
-export function insertPhoto(photo: PhotoRecord): void {
-  const database = getDatabase();
-  const stmt = database.prepare(`
-    INSERT OR REPLACE INTO photos (
-      id, source, account_name, filename, mime_type, creation_time,
-      width, height, file_size, hash, google_media_item_id, synology_path,
-      is_backed_up, backed_up_at, can_be_removed, last_scanned_at, album_name,
-      synology_photo_id
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    )
-  `);
+// Column definitions for photos table to reduce duplication
+const PHOTO_COLUMNS = [
+  'id', 'source', 'account_name', 'filename', 'mime_type', 'creation_time',
+  'width', 'height', 'file_size', 'hash', 'google_media_item_id', 'synology_path',
+  'is_backed_up', 'backed_up_at', 'can_be_removed', 'last_scanned_at', 'album_name',
+  'synology_photo_id'
+] as const;
 
-  stmt.run(
+// Columns to update (excludes 'id' which is the primary key)
+const PHOTO_UPDATE_COLUMNS = PHOTO_COLUMNS.filter(col => col !== 'id');
+
+// Helper to check if an error is a transient database error that can be retried
+function isTransientDbError(error: any): boolean {
+  const message = error?.message?.toLowerCase() || '';
+  const code = error?.code || '';
+
+  // SQLite transient error codes
+  const transientCodes = ['SQLITE_BUSY', 'SQLITE_LOCKED'];
+  if (transientCodes.includes(code)) {
+    return true;
+  }
+
+  // Check error message for transient conditions
+  const transientPatterns = ['database is locked', 'database is busy', 'timeout'];
+  return transientPatterns.some(pattern => message.includes(pattern));
+}
+
+// Helper to get photo values in column order
+function getPhotoValues(photo: PhotoRecord): any[] {
+  return [
     photo.id,
     photo.source,
     photo.accountName,
@@ -218,7 +234,84 @@ export function insertPhoto(photo: PhotoRecord): void {
     photo.lastScannedAt,
     photo.albumName,
     photo.synologyPhotoId
-  );
+  ];
+}
+
+// Helper to get update values (excludes id, adds id at end for WHERE clause)
+function getPhotoUpdateValues(photo: PhotoRecord, targetId: string): any[] {
+  return [
+    photo.source,
+    photo.accountName,
+    photo.filename,
+    photo.mimeType,
+    photo.creationTime,
+    photo.width,
+    photo.height,
+    photo.fileSize,
+    photo.hash,
+    photo.googleMediaItemId,
+    photo.synologyPath,
+    photo.isBackedUp ? 1 : 0,
+    photo.backedUpAt,
+    photo.canBeRemoved ? 1 : 0,
+    photo.lastScannedAt,
+    photo.albumName,
+    photo.synologyPhotoId,
+    targetId
+  ];
+}
+
+export function insertPhoto(photo: PhotoRecord): void {
+  const database = getDatabase();
+  // Use ON CONFLICT DO UPDATE instead of INSERT OR REPLACE to avoid
+  // deleting and re-inserting, which would violate foreign key constraints
+  // from album_items table.
+  // Handle all unique constraints by checking for existing records first.
+
+  // First, check if a record exists with the same synology_path (but different id)
+  // This can happen when re-importing the same files
+  if (photo.synologyPath) {
+    const existing = database.prepare(`
+      SELECT id FROM photos WHERE source = ? AND synology_path = ? AND id != ?
+    `).get(photo.source, photo.synologyPath, photo.id) as { id: string } | undefined;
+
+    if (existing) {
+      try {
+        const updateSetClause = PHOTO_UPDATE_COLUMNS.map(col => `${col} = ?`).join(', ');
+        database.prepare(`
+          UPDATE photos SET ${updateSetClause} WHERE id = ?
+        `).run(...getPhotoUpdateValues(photo, existing.id));
+        return;
+      } catch (e: any) {
+        // Only continue to INSERT path for transient errors (e.g., database locked, timeout)
+        // Re-throw constraint violations since INSERT will fail with the same error
+        if (isTransientDbError(e)) {
+          logger.warn(
+            `Transient error updating existing record (id: ${existing.id}, synology_path: ${photo.synologyPath}), ` +
+            `attempting insert: ${e.message}`
+          );
+        } else {
+          // Constraint violation or other non-transient error - re-throw
+          logger.error(
+            `Failed to update existing record (id: ${existing.id}, synology_path: ${photo.synologyPath}): ${e.message}`
+          );
+          throw e;
+        }
+      }
+    }
+  }
+
+  const columnList = PHOTO_COLUMNS.join(', ');
+  const placeholders = PHOTO_COLUMNS.map(() => '?').join(', ');
+  const onConflictSetClause = PHOTO_UPDATE_COLUMNS.map(col => `${col} = excluded.${col}`).join(', ');
+
+  const stmt = database.prepare(`
+    INSERT INTO photos (${columnList})
+    VALUES (${placeholders})
+    ON CONFLICT(id) DO UPDATE SET ${onConflictSetClause}
+  `);
+
+  stmt.run(...getPhotoValues(photo));
 }
 
 export function getPhotosBySource(source: 'google' | 'synology', accountName?: string): PhotoRecord[] {

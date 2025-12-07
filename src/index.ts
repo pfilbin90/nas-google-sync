@@ -50,6 +50,7 @@ program
   .argument('<path>', 'Path to the extracted Google Takeout folder (containing "Google Photos" subfolder)')
   .option('-a, --account <name>', 'Google account name (e.g., pete_account)', 'default')
   .option('--zip', 'Path is a zip file - extract it first')
+  .option('-c, --concurrency <number>', 'Number of parallel file processing threads (default: 4)', '4')
   .action(async (takeoutPath: string, options) => {
     const service = new SyncService();
     const config = loadConfig();
@@ -78,15 +79,18 @@ program
         photosPath = takeoutSubfolder;
       }
 
+      const concurrency = parseInt(options.concurrency, 10) || 4;
       console.log(`\nImporting from: ${photosPath}`);
-      console.log(`Account: ${options.account}\n`);
+      console.log(`Account: ${options.account}`);
+      console.log(`Concurrency: ${concurrency}\n`);
 
       const result = await service.importFromTakeout(
         photosPath,
         options.account,
         (count) => {
           process.stdout.write(`\rScanned ${count} photos...`);
-        }
+        },
+        { concurrency }
       );
 
       console.log('\n');
