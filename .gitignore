@@ -46,3 +46,15 @@ coverage/
 *.tmp
 *.temp
 photos.db
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.iml
+.metadata
+pubspec.lock
