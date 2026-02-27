@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
-    "axios": "^1.13.2",
+    "axios": "^1.13.5",
     "better-sqlite3": "^12.4.6",
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
